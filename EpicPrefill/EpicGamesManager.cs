@@ -7,6 +7,8 @@
     {
         private readonly IAnsiConsole _ansiConsole;
         private readonly DownloadArguments _downloadArgs;
+        private readonly IEpicAuthProvider? _authProvider;
+        private readonly IPrefillProgress _progress;
 
         private readonly DownloadHandler _downloadHandler;
         private readonly EpicGamesApi _epicApi;
@@ -17,15 +19,17 @@
 
         private readonly PrefillSummaryResult _prefillSummaryResult = new PrefillSummaryResult();
 
-        public EpicGamesManager(IAnsiConsole ansiConsole, DownloadArguments downloadArgs)
+        public EpicGamesManager(IAnsiConsole ansiConsole, DownloadArguments downloadArgs, IEpicAuthProvider? authProvider = null, IPrefillProgress? progress = null)
         {
             _ansiConsole = ansiConsole;
             _downloadArgs = downloadArgs;
+            _authProvider = authProvider;
+            _progress = progress ?? NullProgress.Instance;
 
             // Setup required classes
-            _downloadHandler = new DownloadHandler(_ansiConsole);
+            _downloadHandler = new DownloadHandler(_ansiConsole, _progress);
             _appInfoHandler = new AppInfoHandler(_ansiConsole);
-            _userAccountManager = UserAccountManager.LoadFromFile(_ansiConsole);
+            _userAccountManager = UserAccountManager.LoadFromFile(_ansiConsole, _authProvider!);
 
             _httpClientFactory = new HttpClientFactory(_ansiConsole, _userAccountManager);
             _epicApi = new EpicGamesApi(_ansiConsole, _httpClientFactory);
@@ -55,6 +59,8 @@
             // Whitespace divider
             _ansiConsole.WriteLine();
 
+            _progress.OnLog(LogLevel.Info, $"Starting prefill of {appIdsToDownload.Count} apps");
+
             foreach (var appId in appIdsToDownload)
             {
                 var app = allOwnedGames.First(e => e.AppId == appId);
@@ -73,11 +79,26 @@
                     _ansiConsole.LogMarkupLine(Red($"Unexpected download error : {e.Message}  Skipping app..."));
                     _ansiConsole.MarkupLine("");
                     _prefillSummaryResult.FailedApps++;
+
+                    _progress.OnAppCompleted(
+                        new AppDownloadInfo { AppId = app.AppId, Name = app.Title, TotalBytes = 0 },
+                        AppDownloadResult.Failed);
                 }
             }
 
             _ansiConsole.LogMarkupLine("Prefill complete!");
             _prefillSummaryResult.RenderSummaryTable(_ansiConsole);
+
+            // Notify completion via progress interface
+            _progress.OnPrefillCompleted(new PrefillSummary
+            {
+                TotalApps = _prefillSummaryResult.AlreadyUpToDate + _prefillSummaryResult.Updated + _prefillSummaryResult.FailedApps,
+                UpdatedApps = _prefillSummaryResult.Updated,
+                AlreadyUpToDate = _prefillSummaryResult.AlreadyUpToDate,
+                FailedApps = _prefillSummaryResult.FailedApps,
+                TotalBytesTransferred = (long)_prefillSummaryResult.TotalBytesTransferred.Bytes,
+                TotalTime = _prefillSummaryResult.PrefillElapsedTime.Elapsed
+            });
         }
 
         private async Task DownloadSingleAppAsync(AppInfo app)
@@ -86,6 +107,9 @@
             if (_downloadArgs.Force == false && _appInfoHandler.AppIsUpToDate(app))
             {
                 _prefillSummaryResult.AlreadyUpToDate++;
+                var cachedAppInfo = new AppDownloadInfo { AppId = app.AppId, Name = app.Title, TotalBytes = 0 };
+                _progress.OnAppStarted(cachedAppInfo);
+                _progress.OnAppCompleted(cachedAppInfo, AppDownloadResult.AlreadyUpToDate);
                 return;
             }
 
@@ -102,6 +126,16 @@
             var totalBytes = ByteSize.FromBytes(chunkDownloadQueue.Sum(e => (long)e.DownloadSizeBytes));
             _prefillSummaryResult.TotalBytesTransferred += totalBytes;
 
+            // Notify that app download is starting
+            var appDownloadInfo = new AppDownloadInfo
+            {
+                AppId = app.AppId,
+                Name = app.Title,
+                TotalBytes = (long)totalBytes.Bytes,
+                ChunkCount = chunkDownloadQueue.Count
+            };
+            _progress.OnAppStarted(appDownloadInfo);
+
             _ansiConsole.LogMarkupVerbose($"Downloading {Magenta(totalBytes.ToDecimalString())} from {LightYellow(chunkDownloadQueue.Count)} chunks");
 
             // Finally run the queued downloads
@@ -114,10 +148,12 @@
 
                 _appInfoHandler.MarkDownloadAsSuccessful(app);
                 _prefillSummaryResult.Updated++;
+                _progress.OnAppCompleted(appDownloadInfo, AppDownloadResult.Success);
             }
             else
             {
                 _prefillSummaryResult.FailedApps++;
+                _progress.OnAppCompleted(appDownloadInfo, AppDownloadResult.Failed);
             }
         }
 

@@ -22,9 +22,6 @@
     <PublishTrimmed>true</PublishTrimmed>
     <EnableTrimAnalyzer>true</EnableTrimAnalyzer>
     <TrimmerSingleWarn>false</TrimmerSingleWarn>
-    <!-- Reverts back to the default trim mode used by dotnet 6, otherwise CliFx breaks without reflection -->
-    <TrimMode>partial</TrimMode>
-
     <PublishSingleFile>true</PublishSingleFile>
 
     <!-- Required to be enabled in order to run this application on Ubuntu Docker images. -->
@@ -69,11 +66,6 @@
       <IncludeAssets>runtime; build; native; contentfiles; analyzers; buildtransitive</IncludeAssets>
     </PackageReference>
     <PackageReference Include="Spectre.Console" Version="0.49.2-preview.0.67" />
-
-    <!-- Custom CliFx build, allows for top level exception handling in application code, instead of CliFx swallowing all exceptions -->
-    <Reference Include="CliFx">
-      <HintPath>..\LancachePrefill.Common\lib\CliFx.dll</HintPath>
-    </Reference>
 
     <!-- Debugging Packages -->
     <PackageReference Include="JetBrains.Annotations" Version="2022.1.0" />

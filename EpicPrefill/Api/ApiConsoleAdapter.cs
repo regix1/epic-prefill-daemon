@@ -1,0 +1,116 @@
+using Spectre.Console;
+using Spectre.Console.Rendering;
+using System.Text;
+
+namespace EpicPrefill.Api;
+
+/// <summary>
+/// An IAnsiConsole adapter that routes console operations through the API interfaces.
+/// This allows EpicGamesManager to work without actual console I/O.
+/// </summary>
+internal sealed class ApiConsoleAdapter : IAnsiConsole
+{
+    private readonly IEpicAuthProvider _authProvider;
+    private readonly IPrefillProgress _progress;
+    private readonly StringBuilder _outputBuffer = new();
+
+    public ApiConsoleAdapter(IEpicAuthProvider authProvider, IPrefillProgress progress)
+    {
+        _authProvider = authProvider;
+        _progress = progress;
+
+        Profile = new Spectre.Console.Profile(new NullConsoleOutput(), Encoding.UTF8);
+    }
+
+    public Spectre.Console.Profile Profile { get; }
+    public IAnsiConsoleCursor Cursor => new NullCursor();
+    public IAnsiConsoleInput Input => new ApiConsoleInput(_authProvider);
+    public IExclusivityMode ExclusivityMode => new NoExclusivityMode();
+    public RenderPipeline Pipeline => new();
+
+    public void Clear(bool home)
+    {
+        _outputBuffer.Clear();
+    }
+
+    public void Write(IRenderable renderable)
+    {
+        var text = ExtractText(renderable);
+        if (!string.IsNullOrWhiteSpace(text))
+        {
+            _progress.OnLog(LogLevel.Info, text);
+        }
+    }
+
+    private string ExtractText(IRenderable renderable)
+    {
+        if (renderable is Text textRenderable)
+            return textRenderable.ToString() ?? string.Empty;
+
+        if (renderable is Markup markup)
+            return StripMarkup(markup.ToString() ?? string.Empty);
+
+        if (renderable is Paragraph paragraph)
+            return paragraph.ToString() ?? string.Empty;
+
+        var typeName = renderable.GetType().Name;
+        if (typeName is "ControlCode" or "Segment" or "ControlSequence")
+            return string.Empty;
+
+        var text = renderable.ToString() ?? string.Empty;
+        if (text.StartsWith("Spectre.Console."))
+            return string.Empty;
+
+        return text;
+    }
+
+    private static string StripMarkup(string text)
+    {
+        return System.Text.RegularExpressions.Regex.Replace(text, @"\[/?[^\]]+\]", "");
+    }
+
+    private class NullCursor : IAnsiConsoleCursor
+    {
+        public void Move(CursorDirection direction, int steps) { }
+        public void SetPosition(int column, int line) { }
+        public void Show(bool show) { }
+    }
+
+    private class ApiConsoleInput : IAnsiConsoleInput
+    {
+        private readonly IEpicAuthProvider _authProvider;
+
+        public ApiConsoleInput(IEpicAuthProvider authProvider)
+        {
+            _authProvider = authProvider;
+        }
+
+        public bool IsKeyAvailable() => false;
+
+        public ConsoleKeyInfo? ReadKey(bool intercept)
+        {
+            return null;
+        }
+
+        public async Task<ConsoleKeyInfo?> ReadKeyAsync(bool intercept, CancellationToken cancellationToken)
+        {
+            return await Task.FromResult<ConsoleKeyInfo?>(null);
+        }
+    }
+
+    private class NoExclusivityMode : IExclusivityMode
+    {
+        public T Run<T>(Func<T> func) => func();
+        public async Task<T> RunAsync<T>(Func<Task<T>> func) => await func();
+    }
+
+    private class NullConsoleOutput : IAnsiConsoleOutput
+    {
+        public TextWriter Writer => TextWriter.Null;
+        public bool IsTerminal => false;
+        public int Width => 120;
+        public int Height => 30;
+
+        public void SetEncoding(Encoding encoding) { }
+    }
+}

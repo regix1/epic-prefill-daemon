@@ -9,6 +9,7 @@
     public sealed class UserAccountManager
     {
         private readonly IAnsiConsole _ansiConsole;
+        private readonly IEpicAuthProvider _authProvider;
         private readonly HttpClient _client;
 
         //TODO I'm not sure where this link comes from.  Can I possibly setup my own?
@@ -23,9 +24,10 @@
         //TODO this should probably be private
         public OauthToken OauthToken { get; set; }
 
-        private UserAccountManager(IAnsiConsole ansiConsole)
+        private UserAccountManager(IAnsiConsole ansiConsole, IEpicAuthProvider authProvider)
         {
             _ansiConsole = ansiConsole;
+            _authProvider = authProvider;
             _client = new HttpClient
             {
                 Timeout = AppConfig.DefaultRequestTimeout
@@ -46,7 +48,7 @@
             {
                 try
                 {
-                    var requestParams = BuildRequestParams();
+                    var requestParams = await BuildRequestParamsAsync();
 
                     var authUri = new Uri($"https://{OauthHost}/account/api/oauth/token");
                     using var request = new HttpRequestMessage(HttpMethod.Post, authUri);
@@ -79,7 +81,7 @@
             }
         }
 
-        private Dictionary<string, string> BuildRequestParams()
+        private async Task<Dictionary<string, string>> BuildRequestParamsAsync()
         {
             // Handles the user logging in for the first time, as well as when the refresh token has expired, or when an unknown failure has occurred
             if (OauthToken == null || RefreshTokenIsExpired())
@@ -89,13 +91,9 @@
                     _ansiConsole.LogMarkupLine(LightYellow("Refresh token has expired!  EpicPrefill will need to login again..."));
                 }
 
-                _ansiConsole.LogMarkupLine("Please login into Epic via your browser");
-                _ansiConsole.LogMarkupLine($"If the web page did not open automatically, please manually open the following URL: {Cyan(LoginUrl)}");
-                OpenUrl(LoginUrl);
+                _ansiConsole.LogMarkupLine("Requesting authorization code via auth provider...");
 
-                //TODO handle users pasting in the entire JSON response.  Or figure out a way to not require doing this at all.
-                //TODO might be able to do username + password without browser : https://gist.github.com/iXyles/ec40cb40a2a186425ec6bfb9dcc2ddda
-                var authCode = _ansiConsole.Prompt(new TextPrompt<string>($"Please enter the {LightYellow("authorizationCode")} from the JSON response:"));
+                var authCode = await _authProvider.GetAuthorizationCodeAsync(LoginUrl);
 
                 return new Dictionary<string, string>
                 {
@@ -139,16 +137,16 @@
         }
 
         //TODO document
-        public static UserAccountManager LoadFromFile(IAnsiConsole ansiConsole)
+        public static UserAccountManager LoadFromFile(IAnsiConsole ansiConsole, IEpicAuthProvider authProvider)
         {
             if (!File.Exists(AppConfig.AccountSettingsStorePath))
             {
-                return new UserAccountManager(ansiConsole);
+                return new UserAccountManager(ansiConsole, authProvider);
             }
 
             using var fileStream = File.Open(AppConfig.AccountSettingsStorePath, FileMode.Open, FileAccess.Read);
 
-            var accountManager = new UserAccountManager(ansiConsole);
+            var accountManager = new UserAccountManager(ansiConsole, authProvider);
             accountManager.OauthToken = JsonSerializer.Deserialize(fileStream, SerializationContext.Default.OauthToken);
             return accountManager;
         }
@@ -159,30 +157,5 @@
             JsonSerializer.Serialize(fileStream, OauthToken, SerializationContext.Default.OauthToken);
         }
 
-        private void OpenUrl(string url)
-        {
-            if (RuntimeInformation.IsOSPlatform(OSPlatform.Windows))
-            {
-                url = url.Replace("&", "^&");
-                Process.Start(new ProcessStartInfo(url) { UseShellExecute = true });
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.Linux))
-            {
-                // Detects to see if the user is running in a "desktop environment"/GUI, or if they are running in a terminal session.
-                // Won't be able to launch a web browser without a GUI
-                // https://en.wikipedia.org/wiki/Desktop_environment
-                var currDesktopEnvironment = Environment.GetEnvironmentVariable("XDG_CURRENT_DESKTOP");
-                if (String.IsNullOrEmpty(currDesktopEnvironment))
-                {
-                    return;
-                }
-
-                Process.Start("xdg-open", url);
-            }
-            else if (RuntimeInformation.IsOSPlatform(OSPlatform.OSX))
-            {
-                Process.Start("open", url);
-            }
-        }
     }
 }

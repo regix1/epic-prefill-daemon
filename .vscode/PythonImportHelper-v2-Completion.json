@@ -1,0 +1,559 @@
+[
+    {
+        "label": "re",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "re",
+        "description": "re",
+        "detail": "re",
+        "documentation": {}
+    },
+    {
+        "label": "StringIO",
+        "importPath": "io",
+        "description": "io",
+        "isExtraImport": true,
+        "detail": "io",
+        "documentation": {}
+    },
+    {
+        "label": "Path",
+        "importPath": "pathlib",
+        "description": "pathlib",
+        "isExtraImport": true,
+        "detail": "pathlib",
+        "documentation": {}
+    },
+    {
+        "label": "Path",
+        "importPath": "pathlib",
+        "description": "pathlib",
+        "isExtraImport": true,
+        "detail": "pathlib",
+        "documentation": {}
+    },
+    {
+        "label": "base64",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "base64",
+        "description": "base64",
+        "detail": "base64",
+        "documentation": {}
+    },
+    {
+        "label": "text",
+        "importPath": "rich",
+        "description": "rich",
+        "isExtraImport": true,
+        "detail": "rich",
+        "documentation": {}
+    },
+    {
+        "label": "print",
+        "importPath": "rich",
+        "description": "rich",
+        "isExtraImport": true,
+        "detail": "rich",
+        "documentation": {}
+    },
+    {
+        "label": "print",
+        "importPath": "rich",
+        "description": "rich",
+        "isExtraImport": true,
+        "detail": "rich",
+        "documentation": {}
+    },
+    {
+        "label": "Console",
+        "importPath": "rich.console",
+        "description": "rich.console",
+        "isExtraImport": true,
+        "detail": "rich.console",
+        "documentation": {}
+    },
+    {
+        "label": "TerminalTheme",
+        "importPath": "rich.terminal_theme",
+        "description": "rich.terminal_theme",
+        "isExtraImport": true,
+        "detail": "rich.terminal_theme",
+        "documentation": {}
+    },
+    {
+        "label": "safe_load",
+        "importPath": "yaml",
+        "description": "yaml",
+        "isExtraImport": true,
+        "detail": "yaml",
+        "documentation": {}
+    },
+    {
+        "label": "BeautifulSoup",
+        "importPath": "bs4",
+        "description": "bs4",
+        "isExtraImport": true,
+        "detail": "bs4",
+        "documentation": {}
+    },
+    {
+        "label": "os",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "os",
+        "description": "os",
+        "detail": "os",
+        "documentation": {}
+    },
+    {
+        "label": "sys",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "sys",
+        "description": "sys",
+        "detail": "sys",
+        "documentation": {}
+    },
+    {
+        "label": "RenderAnsiToSvg.functions",
+        "kind": 6,
+        "isExtraImport": true,
+        "importPath": "RenderAnsiToSvg.functions",
+        "description": "RenderAnsiToSvg.functions",
+        "detail": "RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "renderAnsiToSVG",
+        "kind": 2,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "def renderAnsiToSVG(inputDirectory: str):\n\t# Making sure the targeted folder has any .ansi files we can process\n\tansiFilesToProcess = find_files_with_extension(inputDirectory, \".ansi\")\n\tif not ansiFilesToProcess:\n\t\traise Exception(f\"No .ansi files were found in the input directory.\")\n\tfor inputFile in ansiFilesToProcess:\n\t\tprint(f\"Processing [magenta]{inputFile}[/magenta]\")\n\t\tfullFilePath = os.path.join(inputDirectory, inputFile)\n\t\tinputText = ''\n\t\tf = open(fullFilePath, \"r\", encoding='utf-8')",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "renderSingleSVG",
+        "kind": 2,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "def renderSingleSVG(ansiText: str, fileName: str, theme: str | None = None):\n\tconsole = _doRichRender(ansiText)\n\tconsole.save_svg(fileName, theme=_doRichTerminalTheme(theme), title=\"\")\ndef _doRichRender(ansiText: str) -> Console:\n\t#TODO move this variable to be a global setting\n\tCONSOLE_WIDTH = 80\n\tconsole = Console(width=CONSOLE_WIDTH, record=True, file=StringIO())\n\trichText = text.Text.from_ansi(ansiText)\n\tconsole.print(richText)\n\tconsole.height = len(richText.wrap(console, width=CONSOLE_WIDTH))",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "find_files_with_extension",
+        "kind": 2,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "def find_files_with_extension(directory_path: str, extension: str):\n    file_list = [file for file in os.listdir(directory_path) if file.endswith(extension)]\n    return file_list\ndef _doRichTerminalTheme(theme: str | None) -> TerminalTheme:\n\tbase24 = safe_load(Path(theme or f\"{THISDIR}/assets/onedark.yml\").read_text(encoding=\"utf-8\"))\n\treturn TerminalTheme(\n\t\tbackground=_hexToRGB(base24[\"base00\"]),\n\t\tforeground=_hexToRGB(base24[\"base05\"]),\n\t\tnormal=[\n\t\t\t_hexToRGB(base24[\"base01\"]),",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "encode_file_to_base64",
+        "kind": 2,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "def encode_file_to_base64(file_path):\n\twith open(file_path, \"rb\") as file:\n\t\tencoded_bytes = base64.b64encode(file.read())\n\t\tencoded_string = encoded_bytes.decode('utf-8')\n\treturn encoded_string\ndef replace_file_content(file_path, old_string, new_string):\n\twith open(file_path, 'r', encoding='utf-8') as file:\n\t\tfile_contents = file.read()\n\tupdated_contents = file_contents.replace(old_string, new_string)\n\twith open(file_path, 'w', encoding='utf-8') as file:",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "replace_file_content",
+        "kind": 2,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "def replace_file_content(file_path, old_string, new_string):\n\twith open(file_path, 'r', encoding='utf-8') as file:\n\t\tfile_contents = file.read()\n\tupdated_contents = file_contents.replace(old_string, new_string)\n\twith open(file_path, 'w', encoding='utf-8') as file:\n\t\tfile.write(updated_contents)\ndef remove_title_bar(svgOutputPath):\n\tshift_distance = 28\n\twith open(svgOutputPath, 'r', encoding='utf-8') as file:\n\t\tsvg_data = file.read()",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "remove_title_bar",
+        "kind": 2,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "def remove_title_bar(svgOutputPath):\n\tshift_distance = 28\n\twith open(svgOutputPath, 'r', encoding='utf-8') as file:\n\t\tsvg_data = file.read()\n\tsoup = BeautifulSoup(svg_data, 'xml')\n\t# Find the <g> element with the specified transform attribute value\n\tg_elements = soup.find_all('g', attrs={'transform': 'translate(26,22)'})\n\tremoved_g_element = None\n\tfor g_element in g_elements:\n\t\tremoved_g_element = g_element",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "THISDIR",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "THISDIR = str(Path(__file__).resolve().parent)\nsys.path.insert(0, str(Path(THISDIR).parent))\n# TODO move this elsewhere\nfontFilePath = f\"{THISDIR}/assets/CascadiaMono-Regular.woff2\"\ndef renderAnsiToSVG(inputDirectory: str):\n\t# Making sure the targeted folder has any .ansi files we can process\n\tansiFilesToProcess = find_files_with_extension(inputDirectory, \".ansi\")\n\tif not ansiFilesToProcess:\n\t\traise Exception(f\"No .ansi files were found in the input directory.\")\n\tfor inputFile in ansiFilesToProcess:",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "fontFilePath",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "fontFilePath = f\"{THISDIR}/assets/CascadiaMono-Regular.woff2\"\ndef renderAnsiToSVG(inputDirectory: str):\n\t# Making sure the targeted folder has any .ansi files we can process\n\tansiFilesToProcess = find_files_with_extension(inputDirectory, \".ansi\")\n\tif not ansiFilesToProcess:\n\t\traise Exception(f\"No .ansi files were found in the input directory.\")\n\tfor inputFile in ansiFilesToProcess:\n\t\tprint(f\"Processing [magenta]{inputFile}[/magenta]\")\n\t\tfullFilePath = os.path.join(inputDirectory, inputFile)\n\t\tinputText = ''",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tansiFilesToProcess",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tansiFilesToProcess = find_files_with_extension(inputDirectory, \".ansi\")\n\tif not ansiFilesToProcess:\n\t\traise Exception(f\"No .ansi files were found in the input directory.\")\n\tfor inputFile in ansiFilesToProcess:\n\t\tprint(f\"Processing [magenta]{inputFile}[/magenta]\")\n\t\tfullFilePath = os.path.join(inputDirectory, inputFile)\n\t\tinputText = ''\n\t\tf = open(fullFilePath, \"r\", encoding='utf-8')\n\t\tfor line in f:\n\t\t\t# need to manually remove newlines",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tfullFilePath",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tfullFilePath = os.path.join(inputDirectory, inputFile)\n\t\tinputText = ''\n\t\tf = open(fullFilePath, \"r\", encoding='utf-8')\n\t\tfor line in f:\n\t\t\t# need to manually remove newlines\n\t\t\ttemp = line.replace(r'\\r\\n', \"\")\n\t\t\t# handle escaping unicode characters\n\t\t\ttemp = temp.replace(r'\\u001b', \"\\u001b\".encode().decode('unicode-escape'))\n\t\t\tinputText += temp\n\t\tf.close()",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tinputText",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tinputText = ''\n\t\tf = open(fullFilePath, \"r\", encoding='utf-8')\n\t\tfor line in f:\n\t\t\t# need to manually remove newlines\n\t\t\ttemp = line.replace(r'\\r\\n', \"\")\n\t\t\t# handle escaping unicode characters\n\t\t\ttemp = temp.replace(r'\\u001b', \"\\u001b\".encode().decode('unicode-escape'))\n\t\t\tinputText += temp\n\t\tf.close()\n\t\tsvgOutputPath = f\"{inputDirectory}/svg/{os.path.splitext(inputFile)[0]}.svg\"",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tf",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tf = open(fullFilePath, \"r\", encoding='utf-8')\n\t\tfor line in f:\n\t\t\t# need to manually remove newlines\n\t\t\ttemp = line.replace(r'\\r\\n', \"\")\n\t\t\t# handle escaping unicode characters\n\t\t\ttemp = temp.replace(r'\\u001b', \"\\u001b\".encode().decode('unicode-escape'))\n\t\t\tinputText += temp\n\t\tf.close()\n\t\tsvgOutputPath = f\"{inputDirectory}/svg/{os.path.splitext(inputFile)[0]}.svg\"\n\t\trenderSingleSVG(inputText, svgOutputPath)",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\t\ttemp",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\t\ttemp = line.replace(r'\\r\\n', \"\")\n\t\t\t# handle escaping unicode characters\n\t\t\ttemp = temp.replace(r'\\u001b', \"\\u001b\".encode().decode('unicode-escape'))\n\t\t\tinputText += temp\n\t\tf.close()\n\t\tsvgOutputPath = f\"{inputDirectory}/svg/{os.path.splitext(inputFile)[0]}.svg\"\n\t\trenderSingleSVG(inputText, svgOutputPath)\n\t\t# Font will be embedded directly into the SVG.  This is necessary since Github doesn't allow loading fonts from different domains\n\t\tfontBase64String = encode_file_to_base64(fontFilePath)\n\t\treplace_file_content(svgOutputPath, 'Fira Code', 'Cascadia Mono')",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\t\ttemp",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\t\ttemp = temp.replace(r'\\u001b', \"\\u001b\".encode().decode('unicode-escape'))\n\t\t\tinputText += temp\n\t\tf.close()\n\t\tsvgOutputPath = f\"{inputDirectory}/svg/{os.path.splitext(inputFile)[0]}.svg\"\n\t\trenderSingleSVG(inputText, svgOutputPath)\n\t\t# Font will be embedded directly into the SVG.  This is necessary since Github doesn't allow loading fonts from different domains\n\t\tfontBase64String = encode_file_to_base64(fontFilePath)\n\t\treplace_file_content(svgOutputPath, 'Fira Code', 'Cascadia Mono')\n\t\treplace_file_content(svgOutputPath, 'local(\"FiraCode-Regular\")', f\"url(\\\"data:application/font-woff;charset=utf-8;base64,{fontBase64String}\\\") format(\\\"woff2\\\")\")\n\t\tremove_title_bar(svgOutputPath)",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tsvgOutputPath",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tsvgOutputPath = f\"{inputDirectory}/svg/{os.path.splitext(inputFile)[0]}.svg\"\n\t\trenderSingleSVG(inputText, svgOutputPath)\n\t\t# Font will be embedded directly into the SVG.  This is necessary since Github doesn't allow loading fonts from different domains\n\t\tfontBase64String = encode_file_to_base64(fontFilePath)\n\t\treplace_file_content(svgOutputPath, 'Fira Code', 'Cascadia Mono')\n\t\treplace_file_content(svgOutputPath, 'local(\"FiraCode-Regular\")', f\"url(\\\"data:application/font-woff;charset=utf-8;base64,{fontBase64String}\\\") format(\\\"woff2\\\")\")\n\t\tremove_title_bar(svgOutputPath)\ndef renderSingleSVG(ansiText: str, fileName: str, theme: str | None = None):\n\tconsole = _doRichRender(ansiText)\n\tconsole.save_svg(fileName, theme=_doRichTerminalTheme(theme), title=\"\")",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tfontBase64String",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tfontBase64String = encode_file_to_base64(fontFilePath)\n\t\treplace_file_content(svgOutputPath, 'Fira Code', 'Cascadia Mono')\n\t\treplace_file_content(svgOutputPath, 'local(\"FiraCode-Regular\")', f\"url(\\\"data:application/font-woff;charset=utf-8;base64,{fontBase64String}\\\") format(\\\"woff2\\\")\")\n\t\tremove_title_bar(svgOutputPath)\ndef renderSingleSVG(ansiText: str, fileName: str, theme: str | None = None):\n\tconsole = _doRichRender(ansiText)\n\tconsole.save_svg(fileName, theme=_doRichTerminalTheme(theme), title=\"\")\ndef _doRichRender(ansiText: str) -> Console:\n\t#TODO move this variable to be a global setting\n\tCONSOLE_WIDTH = 80",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tconsole",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tconsole = _doRichRender(ansiText)\n\tconsole.save_svg(fileName, theme=_doRichTerminalTheme(theme), title=\"\")\ndef _doRichRender(ansiText: str) -> Console:\n\t#TODO move this variable to be a global setting\n\tCONSOLE_WIDTH = 80\n\tconsole = Console(width=CONSOLE_WIDTH, record=True, file=StringIO())\n\trichText = text.Text.from_ansi(ansiText)\n\tconsole.print(richText)\n\tconsole.height = len(richText.wrap(console, width=CONSOLE_WIDTH))\n\treturn console",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tCONSOLE_WIDTH",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tCONSOLE_WIDTH = 80\n\tconsole = Console(width=CONSOLE_WIDTH, record=True, file=StringIO())\n\trichText = text.Text.from_ansi(ansiText)\n\tconsole.print(richText)\n\tconsole.height = len(richText.wrap(console, width=CONSOLE_WIDTH))\n\treturn console\ndef find_files_with_extension(directory_path: str, extension: str):\n    file_list = [file for file in os.listdir(directory_path) if file.endswith(extension)]\n    return file_list\ndef _doRichTerminalTheme(theme: str | None) -> TerminalTheme:",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tconsole",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tconsole = Console(width=CONSOLE_WIDTH, record=True, file=StringIO())\n\trichText = text.Text.from_ansi(ansiText)\n\tconsole.print(richText)\n\tconsole.height = len(richText.wrap(console, width=CONSOLE_WIDTH))\n\treturn console\ndef find_files_with_extension(directory_path: str, extension: str):\n    file_list = [file for file in os.listdir(directory_path) if file.endswith(extension)]\n    return file_list\ndef _doRichTerminalTheme(theme: str | None) -> TerminalTheme:\n\tbase24 = safe_load(Path(theme or f\"{THISDIR}/assets/onedark.yml\").read_text(encoding=\"utf-8\"))",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\trichText",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\trichText = text.Text.from_ansi(ansiText)\n\tconsole.print(richText)\n\tconsole.height = len(richText.wrap(console, width=CONSOLE_WIDTH))\n\treturn console\ndef find_files_with_extension(directory_path: str, extension: str):\n    file_list = [file for file in os.listdir(directory_path) if file.endswith(extension)]\n    return file_list\ndef _doRichTerminalTheme(theme: str | None) -> TerminalTheme:\n\tbase24 = safe_load(Path(theme or f\"{THISDIR}/assets/onedark.yml\").read_text(encoding=\"utf-8\"))\n\treturn TerminalTheme(",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tconsole.height",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tconsole.height = len(richText.wrap(console, width=CONSOLE_WIDTH))\n\treturn console\ndef find_files_with_extension(directory_path: str, extension: str):\n    file_list = [file for file in os.listdir(directory_path) if file.endswith(extension)]\n    return file_list\ndef _doRichTerminalTheme(theme: str | None) -> TerminalTheme:\n\tbase24 = safe_load(Path(theme or f\"{THISDIR}/assets/onedark.yml\").read_text(encoding=\"utf-8\"))\n\treturn TerminalTheme(\n\t\tbackground=_hexToRGB(base24[\"base00\"]),\n\t\tforeground=_hexToRGB(base24[\"base05\"]),",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tbase24",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tbase24 = safe_load(Path(theme or f\"{THISDIR}/assets/onedark.yml\").read_text(encoding=\"utf-8\"))\n\treturn TerminalTheme(\n\t\tbackground=_hexToRGB(base24[\"base00\"]),\n\t\tforeground=_hexToRGB(base24[\"base05\"]),\n\t\tnormal=[\n\t\t\t_hexToRGB(base24[\"base01\"]),\n\t\t\t_hexToRGB(base24[\"base08\"]),\n\t\t\t_hexToRGB(base24[\"base0B\"]),\n\t\t\t_hexToRGB(base24[\"base09\"]),\n\t\t\t_hexToRGB(base24[\"base0D\"]),",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tencoded_bytes",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tencoded_bytes = base64.b64encode(file.read())\n\t\tencoded_string = encoded_bytes.decode('utf-8')\n\treturn encoded_string\ndef replace_file_content(file_path, old_string, new_string):\n\twith open(file_path, 'r', encoding='utf-8') as file:\n\t\tfile_contents = file.read()\n\tupdated_contents = file_contents.replace(old_string, new_string)\n\twith open(file_path, 'w', encoding='utf-8') as file:\n\t\tfile.write(updated_contents)\ndef remove_title_bar(svgOutputPath):",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tencoded_string",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tencoded_string = encoded_bytes.decode('utf-8')\n\treturn encoded_string\ndef replace_file_content(file_path, old_string, new_string):\n\twith open(file_path, 'r', encoding='utf-8') as file:\n\t\tfile_contents = file.read()\n\tupdated_contents = file_contents.replace(old_string, new_string)\n\twith open(file_path, 'w', encoding='utf-8') as file:\n\t\tfile.write(updated_contents)\ndef remove_title_bar(svgOutputPath):\n\tshift_distance = 28",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tfile_contents",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tfile_contents = file.read()\n\tupdated_contents = file_contents.replace(old_string, new_string)\n\twith open(file_path, 'w', encoding='utf-8') as file:\n\t\tfile.write(updated_contents)\ndef remove_title_bar(svgOutputPath):\n\tshift_distance = 28\n\twith open(svgOutputPath, 'r', encoding='utf-8') as file:\n\t\tsvg_data = file.read()\n\tsoup = BeautifulSoup(svg_data, 'xml')\n\t# Find the <g> element with the specified transform attribute value",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tupdated_contents",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tupdated_contents = file_contents.replace(old_string, new_string)\n\twith open(file_path, 'w', encoding='utf-8') as file:\n\t\tfile.write(updated_contents)\ndef remove_title_bar(svgOutputPath):\n\tshift_distance = 28\n\twith open(svgOutputPath, 'r', encoding='utf-8') as file:\n\t\tsvg_data = file.read()\n\tsoup = BeautifulSoup(svg_data, 'xml')\n\t# Find the <g> element with the specified transform attribute value\n\tg_elements = soup.find_all('g', attrs={'transform': 'translate(26,22)'})",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tshift_distance",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tshift_distance = 28\n\twith open(svgOutputPath, 'r', encoding='utf-8') as file:\n\t\tsvg_data = file.read()\n\tsoup = BeautifulSoup(svg_data, 'xml')\n\t# Find the <g> element with the specified transform attribute value\n\tg_elements = soup.find_all('g', attrs={'transform': 'translate(26,22)'})\n\tremoved_g_element = None\n\tfor g_element in g_elements:\n\t\tremoved_g_element = g_element\n\t\tbreak  # Remove only the first matching <g> element",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tsvg_data",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tsvg_data = file.read()\n\tsoup = BeautifulSoup(svg_data, 'xml')\n\t# Find the <g> element with the specified transform attribute value\n\tg_elements = soup.find_all('g', attrs={'transform': 'translate(26,22)'})\n\tremoved_g_element = None\n\tfor g_element in g_elements:\n\t\tremoved_g_element = g_element\n\t\tbreak  # Remove only the first matching <g> element\n\tif removed_g_element is not None:\n\t\t# Calculate the vertical shift distance",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tsoup",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tsoup = BeautifulSoup(svg_data, 'xml')\n\t# Find the <g> element with the specified transform attribute value\n\tg_elements = soup.find_all('g', attrs={'transform': 'translate(26,22)'})\n\tremoved_g_element = None\n\tfor g_element in g_elements:\n\t\tremoved_g_element = g_element\n\t\tbreak  # Remove only the first matching <g> element\n\tif removed_g_element is not None:\n\t\t# Calculate the vertical shift distance\n\t\t# Remove the <g> element",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tg_elements",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tg_elements = soup.find_all('g', attrs={'transform': 'translate(26,22)'})\n\tremoved_g_element = None\n\tfor g_element in g_elements:\n\t\tremoved_g_element = g_element\n\t\tbreak  # Remove only the first matching <g> element\n\tif removed_g_element is not None:\n\t\t# Calculate the vertical shift distance\n\t\t# Remove the <g> element\n\t\tremoved_g_element.decompose()\n\t\t# Shift the remaining elements upwards",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tremoved_g_element",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tremoved_g_element = None\n\tfor g_element in g_elements:\n\t\tremoved_g_element = g_element\n\t\tbreak  # Remove only the first matching <g> element\n\tif removed_g_element is not None:\n\t\t# Calculate the vertical shift distance\n\t\t# Remove the <g> element\n\t\tremoved_g_element.decompose()\n\t\t# Shift the remaining elements upwards\n\t\tfor element in soup.find_all():",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tremoved_g_element",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tremoved_g_element = g_element\n\t\tbreak  # Remove only the first matching <g> element\n\tif removed_g_element is not None:\n\t\t# Calculate the vertical shift distance\n\t\t# Remove the <g> element\n\t\tremoved_g_element.decompose()\n\t\t# Shift the remaining elements upwards\n\t\tfor element in soup.find_all():\n\t\t\tif 'transform' in element.attrs:\n\t\t\t\ttransform_value = element['transform']",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\t\t\ttransform_value",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\t\t\ttransform_value = element['transform']\n\t\t\t\tmatch = re.search(r\"translate\\((\\d+),\\s*(\\d+)\\)\", transform_value)\n\t\t\t\tx_value = int(match.group(1))\n\t\t\t\ty_value = int(match.group(2))\n\t\t\t\telement['transform'] = f\"translate({x_value},{y_value - shift_distance})\"\n\t# Shrinking background rectangle\n\trect_elements = soup.find_all('rect', attrs={'fill': '#282c34'})\n\tfor rect_element in rect_elements:\n\t\tparsed = float(rect_element['height'])\n\t\trect_element['height'] = str(parsed - shift_distance + 4)",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\t\t\tmatch",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\t\t\tmatch = re.search(r\"translate\\((\\d+),\\s*(\\d+)\\)\", transform_value)\n\t\t\t\tx_value = int(match.group(1))\n\t\t\t\ty_value = int(match.group(2))\n\t\t\t\telement['transform'] = f\"translate({x_value},{y_value - shift_distance})\"\n\t# Shrinking background rectangle\n\trect_elements = soup.find_all('rect', attrs={'fill': '#282c34'})\n\tfor rect_element in rect_elements:\n\t\tparsed = float(rect_element['height'])\n\t\trect_element['height'] = str(parsed - shift_distance + 4)\n\t\tbreak  # Remove only the first matching <g> element",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\t\t\tx_value",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\t\t\tx_value = int(match.group(1))\n\t\t\t\ty_value = int(match.group(2))\n\t\t\t\telement['transform'] = f\"translate({x_value},{y_value - shift_distance})\"\n\t# Shrinking background rectangle\n\trect_elements = soup.find_all('rect', attrs={'fill': '#282c34'})\n\tfor rect_element in rect_elements:\n\t\tparsed = float(rect_element['height'])\n\t\trect_element['height'] = str(parsed - shift_distance + 4)\n\t\tbreak  # Remove only the first matching <g> element\n\t# Shrinking overall viewbox box",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\t\t\ty_value",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\t\t\ty_value = int(match.group(2))\n\t\t\t\telement['transform'] = f\"translate({x_value},{y_value - shift_distance})\"\n\t# Shrinking background rectangle\n\trect_elements = soup.find_all('rect', attrs={'fill': '#282c34'})\n\tfor rect_element in rect_elements:\n\t\tparsed = float(rect_element['height'])\n\t\trect_element['height'] = str(parsed - shift_distance + 4)\n\t\tbreak  # Remove only the first matching <g> element\n\t# Shrinking overall viewbox box\n\troot_svg_tag = soup.find('svg')",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\t\t\telement['transform']",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\t\t\telement['transform'] = f\"translate({x_value},{y_value - shift_distance})\"\n\t# Shrinking background rectangle\n\trect_elements = soup.find_all('rect', attrs={'fill': '#282c34'})\n\tfor rect_element in rect_elements:\n\t\tparsed = float(rect_element['height'])\n\t\trect_element['height'] = str(parsed - shift_distance + 4)\n\t\tbreak  # Remove only the first matching <g> element\n\t# Shrinking overall viewbox box\n\troot_svg_tag = soup.find('svg')\n\tviewbox = root_svg_tag['viewBox'].split(' ')",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\trect_elements",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\trect_elements = soup.find_all('rect', attrs={'fill': '#282c34'})\n\tfor rect_element in rect_elements:\n\t\tparsed = float(rect_element['height'])\n\t\trect_element['height'] = str(parsed - shift_distance + 4)\n\t\tbreak  # Remove only the first matching <g> element\n\t# Shrinking overall viewbox box\n\troot_svg_tag = soup.find('svg')\n\tviewbox = root_svg_tag['viewBox'].split(' ')\n\t# Calculate and update new height\n\tcurrent_height = float(viewbox[3])",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\tparsed",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\tparsed = float(rect_element['height'])\n\t\trect_element['height'] = str(parsed - shift_distance + 4)\n\t\tbreak  # Remove only the first matching <g> element\n\t# Shrinking overall viewbox box\n\troot_svg_tag = soup.find('svg')\n\tviewbox = root_svg_tag['viewBox'].split(' ')\n\t# Calculate and update new height\n\tcurrent_height = float(viewbox[3])\n\tnew_height = current_height - shift_distance + 4\n\tviewbox[3] = str(new_height)",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\t\trect_element['height']",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\t\trect_element['height'] = str(parsed - shift_distance + 4)\n\t\tbreak  # Remove only the first matching <g> element\n\t# Shrinking overall viewbox box\n\troot_svg_tag = soup.find('svg')\n\tviewbox = root_svg_tag['viewBox'].split(' ')\n\t# Calculate and update new height\n\tcurrent_height = float(viewbox[3])\n\tnew_height = current_height - shift_distance + 4\n\tviewbox[3] = str(new_height)\n\t# Save new height",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\troot_svg_tag",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\troot_svg_tag = soup.find('svg')\n\tviewbox = root_svg_tag['viewBox'].split(' ')\n\t# Calculate and update new height\n\tcurrent_height = float(viewbox[3])\n\tnew_height = current_height - shift_distance + 4\n\tviewbox[3] = str(new_height)\n\t# Save new height\n\troot_svg_tag['viewBox'] = ' '.join(viewbox)\n\twith open(svgOutputPath, 'w', encoding='utf-8') as file:\n\t\tfile.write(str(soup))",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tviewbox",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tviewbox = root_svg_tag['viewBox'].split(' ')\n\t# Calculate and update new height\n\tcurrent_height = float(viewbox[3])\n\tnew_height = current_height - shift_distance + 4\n\tviewbox[3] = str(new_height)\n\t# Save new height\n\troot_svg_tag['viewBox'] = ' '.join(viewbox)\n\twith open(svgOutputPath, 'w', encoding='utf-8') as file:\n\t\tfile.write(str(soup))",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tcurrent_height",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tcurrent_height = float(viewbox[3])\n\tnew_height = current_height - shift_distance + 4\n\tviewbox[3] = str(new_height)\n\t# Save new height\n\troot_svg_tag['viewBox'] = ' '.join(viewbox)\n\twith open(svgOutputPath, 'w', encoding='utf-8') as file:\n\t\tfile.write(str(soup))",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tnew_height",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tnew_height = current_height - shift_distance + 4\n\tviewbox[3] = str(new_height)\n\t# Save new height\n\troot_svg_tag['viewBox'] = ' '.join(viewbox)\n\twith open(svgOutputPath, 'w', encoding='utf-8') as file:\n\t\tfile.write(str(soup))",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\tviewbox[3]",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\tviewbox[3] = str(new_height)\n\t# Save new height\n\troot_svg_tag['viewBox'] = ' '.join(viewbox)\n\twith open(svgOutputPath, 'w', encoding='utf-8') as file:\n\t\tfile.write(str(soup))",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "\troot_svg_tag['viewBox']",
+        "kind": 5,
+        "importPath": "docs.RenderAnsiToSvg.functions",
+        "description": "docs.RenderAnsiToSvg.functions",
+        "peekOfCode": "\troot_svg_tag['viewBox'] = ' '.join(viewbox)\n\twith open(svgOutputPath, 'w', encoding='utf-8') as file:\n\t\tfile.write(str(soup))",
+        "detail": "docs.RenderAnsiToSvg.functions",
+        "documentation": {}
+    },
+    {
+        "label": "script_dir",
+        "kind": 5,
+        "importPath": "docs.RenderSvgs",
+        "description": "docs.RenderSvgs",
+        "peekOfCode": "script_dir = str(Path(__file__).resolve().parent)\n#endregion\n# Specifies the directory that is holding the input .ansi files to be processed\ninputDirectory = f\"{script_dir}/img\"\n# inputDirectory = f\"{script_dir}/mkdocs/images\"\n# TODO document the output dir\na2svg.renderAnsiToSVG(inputDirectory)\n# Opens the specified file in the browser automatically after each run, to display the changes immediately.  Helpful for debugging or updating a .ansi file\nos.system(f'start {inputDirectory}/svg/Interactive-App-Selection.svg')",
+        "detail": "docs.RenderSvgs",
+        "documentation": {}
+    },
+    {
+        "label": "inputDirectory",
+        "kind": 5,
+        "importPath": "docs.RenderSvgs",
+        "description": "docs.RenderSvgs",
+        "peekOfCode": "inputDirectory = f\"{script_dir}/img\"\n# inputDirectory = f\"{script_dir}/mkdocs/images\"\n# TODO document the output dir\na2svg.renderAnsiToSVG(inputDirectory)\n# Opens the specified file in the browser automatically after each run, to display the changes immediately.  Helpful for debugging or updating a .ansi file\nos.system(f'start {inputDirectory}/svg/Interactive-App-Selection.svg')",
+        "detail": "docs.RenderSvgs",
+        "documentation": {}
+    }
+]
