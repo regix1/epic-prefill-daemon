@@ -1,28 +1,28 @@
-FROM ubuntu:22.04
-LABEL maintainers="tpilius@gmail.com;"
+FROM ubuntu:20.04
+LABEL maintainers="tpilius@gmail.com;regix1"
 
 ARG TARGETARCH
 
 RUN \
-        apt update \
-        && DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
-                ca-certificates \
-                curl \
-                dnsutils \
-                libncursesw5 \
-                locales \
-                tzdata \
-        && sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen \
-        && dpkg-reconfigure --frontend=noninteractive locales \
-        && update-locale LANG=en_US.UTF-8 \
-        && rm -rf /var/cache/apt/archives /var/lib/apt/lists/*
+	apt update \
+	&& DEBIAN_FRONTEND=noninteractive apt install -y --no-install-recommends \
+		ca-certificates \
+		curl \
+		dnsutils \
+		libncursesw5 \
+		locales \
+		tzdata \
+	&& sed -i '/en_US.UTF-8/s/^# //' /etc/locale.gen \
+	&& dpkg-reconfigure --frontend=noninteractive locales \
+	&& update-locale LANG=en_US.UTF-8 \
+	&& rm -rf /var/cache/apt/archives /var/lib/apt/lists/*
 
 ENV \
-        LANG=en_US.UTF-8 \
-        LANGUAGE=en_US:en \
-        LC_ALL=en_US.UTF-8 \
-        TERM=xterm-256color \
-        HOME=/app
+	LANG=en_US.UTF-8 \
+	LANGUAGE=en_US:en \
+	LC_ALL=en_US.UTF-8 \
+	TERM=xterm-256color \
+	HOME=/app
 
 # Create app directory structure
 WORKDIR /app
