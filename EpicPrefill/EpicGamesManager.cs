@@ -180,6 +180,11 @@
             return ownedApps.OrderBy(e => e.Title, StringComparer.OrdinalIgnoreCase).ToList();
         }
 
+        /// <summary>
+        /// Checks if an app's current build version has been previously downloaded.
+        /// </summary>
+        public bool IsAppUpToDate(AppInfo app) => _appInfoHandler.AppIsUpToDate(app);
+
         #region Select Apps
 
         public void SetAppsAsSelected(List<TuiAppInfo> userSelected)

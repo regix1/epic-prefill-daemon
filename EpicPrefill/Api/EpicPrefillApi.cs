@@ -114,6 +114,116 @@ public sealed class EpicPrefillApi : IDisposable
         return fileApps;
     }
 
+    /// <summary>
+    /// Gets status of selected apps including names. Download sizes are not available for Epic games
+    /// without downloading manifests, so TotalDownloadSize will be 0.
+    /// </summary>
+    public async Task<SelectedAppsStatus> GetSelectedAppsStatusAsync(List<string>? operatingSystems = null, CancellationToken cancellationToken = default)
+    {
+        ThrowIfNotInitialized();
+        ThrowIfDisposed();
+
+        var selectedAppIds = GetSelectedApps();
+        if (selectedAppIds.Count == 0)
+        {
+            return new SelectedAppsStatus
+            {
+                Apps = new List<AppStatus>(),
+                TotalDownloadSize = 0,
+                Message = "No apps selected"
+            };
+        }
+
+        try
+        {
+            var allGames = await _epicManager!.GetAvailableGamesAsync();
+            var gamesByAppId = allGames.ToDictionary(g => g.AppId, g => g);
+
+            var apps = selectedAppIds.Select(appId =>
+            {
+                var hasGame = gamesByAppId.TryGetValue(appId, out var game);
+                return new AppStatus
+                {
+                    AppId = appId,
+                    Name = hasGame ? game!.Title : appId,
+                    DownloadSize = 0,
+                    IsUpToDate = hasGame && _epicManager.IsAppUpToDate(game!)
+                };
+            }).ToList();
+
+            return new SelectedAppsStatus
+            {
+                Apps = apps,
+                TotalDownloadSize = 0,
+                Message = "Size estimation not available for Epic games"
+            };
+        }
+        catch (Exception ex)
+        {
+            _progress.OnError("Failed to get selected apps status", ex);
+            return new SelectedAppsStatus
+            {
+                Apps = new List<AppStatus>(),
+                TotalDownloadSize = 0,
+                Message = $"Error: {ex.Message}"
+            };
+        }
+    }
+
+    /// <summary>
+    /// Checks cache status by comparing app build versions against previously downloaded versions.
+    /// Returns which apps are up-to-date and which need updating.
+    /// </summary>
+    public async Task<CacheStatusResult> CheckCacheStatusAsync(List<string> appIds, CancellationToken cancellationToken = default)
+    {
+        ThrowIfNotInitialized();
+        ThrowIfDisposed();
+
+        if (appIds.Count == 0)
+        {
+            return new CacheStatusResult
+            {
+                Apps = new List<AppCacheStatus>(),
+                Message = "No app IDs provided"
+            };
+        }
+
+        try
+        {
+            var allGames = await _epicManager!.GetAvailableGamesAsync();
+            var gamesByAppId = allGames.ToDictionary(g => g.AppId, g => g);
+
+            var apps = new List<AppCacheStatus>();
+            foreach (var appId in appIds.Distinct())
+            {
+                if (gamesByAppId.TryGetValue(appId, out var game))
+                {
+                    apps.Add(new AppCacheStatus
+                    {
+                        AppId = appId,
+                        Name = game.Title,
+                        IsUpToDate = _epicManager.IsAppUpToDate(game)
+                    });
+                }
+            }
+
+            return new CacheStatusResult
+            {
+                Apps = apps,
+                Message = $"Checked {apps.Count} apps"
+            };
+        }
+        catch (Exception ex)
+        {
+            _progress.OnError("Failed to check cache status", ex);
+            return new CacheStatusResult
+            {
+                Apps = new List<AppCacheStatus>(),
+                Message = $"Error: {ex.Message}"
+            };
+        }
+    }
+
     public void SetSelectedApps(IEnumerable<string> appIds)
     {
         ThrowIfNotInitialized();
@@ -312,4 +422,17 @@ public class OwnedGame
 {
     public string AppId { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
+}
+
+public class CacheStatusResult
+{
+    public List<AppCacheStatus> Apps { get; init; } = new();
+    public string? Message { get; init; }
+}
+
+public class AppCacheStatus
+{
+    public string AppId { get; init; } = "";
+    public string Name { get; init; } = "";
+    public bool IsUpToDate { get; init; }
 }

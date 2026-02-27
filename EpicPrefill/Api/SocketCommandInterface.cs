@@ -98,9 +98,11 @@ public sealed class SocketCommandInterface : IDisposable
                 "get-owned-games" => await HandleGetOwnedGamesAsync(request, cancellationToken),
                 "get-selected-apps" => HandleGetSelectedApps(request),
                 "set-selected-apps" => HandleSetSelectedApps(request),
+                "get-selected-apps-status" => await HandleGetSelectedAppsStatusAsync(request, cancellationToken),
                 "prefill" => await HandlePrefillAsync(request, cancellationToken),
                 "clear-cache" => HandleClearCache(request),
                 "get-cache-info" => HandleGetCacheInfo(request),
+                "check-cache-status" => await HandleCheckCacheStatusAsync(request, cancellationToken),
                 "shutdown" => HandleShutdown(request),
                 _ => new CommandResponse
                 {
@@ -340,6 +342,29 @@ public sealed class SocketCommandInterface : IDisposable
         };
     }
 
+    private async Task<CommandResponse> HandleGetSelectedAppsStatusAsync(CommandRequest request, CancellationToken cancellationToken)
+    {
+        EnsureLoggedIn();
+
+        List<string>? operatingSystems = null;
+        var osParam = request.Parameters?.GetValueOrDefault("os");
+        if (!string.IsNullOrEmpty(osParam))
+        {
+            operatingSystems = osParam.Split(',', StringSplitOptions.RemoveEmptyEntries | StringSplitOptions.TrimEntries).ToList();
+        }
+
+        var status = await _api!.GetSelectedAppsStatusAsync(operatingSystems, cancellationToken);
+
+        return new CommandResponse
+        {
+            Id = request.Id,
+            Success = true,
+            Data = status,
+            Message = status.Message,
+            CompletedAt = DateTime.UtcNow
+        };
+    }
+
     private Task<CommandResponse> HandlePrefillAsync(CommandRequest request, CancellationToken cancellationToken)
     {
         EnsureLoggedIn();
@@ -416,6 +441,42 @@ public sealed class SocketCommandInterface : IDisposable
         return new CommandResponse
         {
             Id = request.Id, Success = info.Success, Data = info, Message = info.Message, CompletedAt = DateTime.UtcNow
+        };
+    }
+
+    private async Task<CommandResponse> HandleCheckCacheStatusAsync(CommandRequest request, CancellationToken cancellationToken)
+    {
+        EnsureLoggedIn();
+
+        // Accept app IDs as a JSON string list in "appIds" parameter
+        List<string> appIds;
+        var appIdsJson = request.Parameters?.GetValueOrDefault("appIds");
+        if (!string.IsNullOrEmpty(appIdsJson))
+        {
+            appIds = JsonSerializer.Deserialize(appIdsJson, DaemonSerializationContext.Default.ListString) ?? new List<string>();
+        }
+        else
+        {
+            // No app IDs provided
+            return new CommandResponse
+            {
+                Id = request.Id,
+                Success = true,
+                Data = new CacheStatusResult { Apps = new List<AppCacheStatus>(), Message = "No app IDs provided" },
+                Message = "No app IDs provided",
+                CompletedAt = DateTime.UtcNow
+            };
+        }
+
+        var status = await _api!.CheckCacheStatusAsync(appIds, cancellationToken);
+
+        return new CommandResponse
+        {
+            Id = request.Id,
+            Success = true,
+            Data = status,
+            Message = status.Message,
+            CompletedAt = DateTime.UtcNow
         };
     }
 
