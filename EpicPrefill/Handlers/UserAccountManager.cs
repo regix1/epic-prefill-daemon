@@ -55,13 +55,25 @@
                     request.Headers.Authorization = BasicAuthentication.ToAuthenticationHeader(BasicUsername, BasicPassword);
                     request.Content = new FormUrlEncodedContent(requestParams);
 
-                    using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
-                    response.EnsureSuccessStatusCode();
+                    using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseContentRead);
+
+                    if (!response.IsSuccessStatusCode)
+                    {
+                        var errorBody = await response.Content.ReadAsStringAsync();
+                        CheckForCorrectiveAction(errorBody);
+                        // Not a corrective action - throw generic HTTP error
+                        response.EnsureSuccessStatusCode();
+                    }
 
                     using var responseStream = await response.Content.ReadAsStreamAsync();
                     OauthToken = await JsonSerializer.DeserializeAsync(responseStream, SerializationContext.Default.OauthToken);
 
                     Save();
+                }
+                catch (EpicLoginException)
+                {
+                    // Don't retry corrective action errors - they require user action
+                    throw;
                 }
                 catch (Exception e)
                 {
@@ -78,6 +90,54 @@
             if (retryCount == 3)
             {
                 throw new EpicLoginException("Unable to login to Epic!  Try again in a few moments...");
+            }
+        }
+
+        /// <summary>
+        /// Checks if Epic's OAuth response contains a corrective action requirement (e.g. EULA acceptance).
+        /// Throws EpicLoginException with a user-friendly message if action is required.
+        /// </summary>
+        private void CheckForCorrectiveAction(string responseBody)
+        {
+            try
+            {
+                using var doc = JsonDocument.Parse(responseBody);
+                var root = doc.RootElement;
+
+                if (!root.TryGetProperty("errorCode", out var errorCode))
+                    return;
+
+                var errorCodeStr = errorCode.GetString() ?? "";
+                if (!errorCodeStr.Contains("corrective_action_required", StringComparison.OrdinalIgnoreCase))
+                    return;
+
+                var action = "unknown";
+                if (root.TryGetProperty("metadata", out var metadata) &&
+                    metadata.TryGetProperty("correctiveAction", out var correctiveAction))
+                {
+                    action = correctiveAction.GetString() ?? "unknown";
+                }
+
+                if (action.Equals("EULA_ACCEPTANCE", StringComparison.OrdinalIgnoreCase))
+                {
+                    _ansiConsole.LogMarkupLine(LightYellow("Epic Games requires you to accept updated terms of service."));
+                    throw new EpicLoginException(
+                        "Epic Games requires you to accept updated terms. " +
+                        "Please open the Epic Games Store (https://store.epicgames.com) in your browser, " +
+                        "log in, and accept any pending agreements. Then try logging in again.");
+                }
+
+                throw new EpicLoginException(
+                    $"Epic Games requires a corrective action: {action}. " +
+                    "Please log in at https://store.epicgames.com and resolve any account issues, then try again.");
+            }
+            catch (EpicLoginException)
+            {
+                throw;
+            }
+            catch
+            {
+                // JSON parsing failed - not a corrective action error, ignore
             }
         }
 
