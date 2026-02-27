@@ -63,9 +63,20 @@
 
             foreach (var appId in appIdsToDownload)
             {
-                var app = allOwnedGames.First(e => e.AppId == appId);
+                AppInfo? app = null;
                 try
                 {
+                    app = allOwnedGames.FirstOrDefault(e => e.AppId == appId);
+                    if (app == null)
+                    {
+                        _progress.OnLog(LogLevel.Warning, $"App {appId} not found in owned games, skipping");
+                        _prefillSummaryResult.FailedApps++;
+                        _progress.OnAppCompleted(
+                            new AppDownloadInfo { AppId = appId, Name = appId, TotalBytes = 0 },
+                            AppDownloadResult.Failed);
+                        continue;
+                    }
+
                     await DownloadSingleAppAsync(app, force);
                 }
                 catch (Exception e) when (e is LancacheNotFoundException)
@@ -76,12 +87,12 @@
                 catch (Exception e)
                 {
                     // Need to catch any exceptions that might happen during a single download, so that the other apps won't be affected
-                    _ansiConsole.LogMarkupLine(Red($"Unexpected download error : {e.Message}  Skipping app..."));
-                    _ansiConsole.MarkupLine("");
+                    var appName = app?.Title ?? appId;
+                    _progress.OnLog(LogLevel.Error, $"Download error for {appName}: {e.Message}");
                     _prefillSummaryResult.FailedApps++;
 
                     _progress.OnAppCompleted(
-                        new AppDownloadInfo { AppId = app.AppId, Name = app.Title, TotalBytes = 0 },
+                        new AppDownloadInfo { AppId = app?.AppId ?? appId, Name = appName, TotalBytes = 0 },
                         AppDownloadResult.Failed);
                 }
             }
@@ -113,8 +124,7 @@
                 return;
             }
 
-            _ansiConsole.LogMarkupLine($"Starting {Cyan(app.Title)}");
-            _ansiConsole.LogMarkupVerbose($"Downloading version : {LightGreen(app.BuildVersion)}");
+            _progress.OnLog(LogLevel.Info, $"Starting download: {app.Title} ({app.AppId}), version: {app.BuildVersion}");
 
             // Download the latest manifest, and build the list of requests in order to download the app
             ManifestUrl manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app);
