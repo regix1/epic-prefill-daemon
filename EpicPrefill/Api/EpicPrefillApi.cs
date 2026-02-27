@@ -115,8 +115,8 @@ public sealed class EpicPrefillApi : IDisposable
     }
 
     /// <summary>
-    /// Gets status of selected apps including names. Download sizes are not available for Epic games
-    /// without downloading manifests, so TotalDownloadSize will be 0.
+    /// Gets status of selected apps including names and download sizes.
+    /// Downloads manifests to calculate actual sizes (may take a moment for many apps).
     /// </summary>
     public async Task<SelectedAppsStatus> GetSelectedAppsStatusAsync(List<string>? operatingSystems = null, CancellationToken cancellationToken = default)
     {
@@ -139,23 +139,46 @@ public sealed class EpicPrefillApi : IDisposable
             var allGames = await _epicManager!.GetAvailableGamesAsync();
             var gamesByAppId = allGames.ToDictionary(g => g.AppId, g => g);
 
-            var apps = selectedAppIds.Select(appId =>
+            var apps = new List<AppStatus>();
+            long totalDownloadSize = 0;
+
+            foreach (var appId in selectedAppIds)
             {
-                var hasGame = gamesByAppId.TryGetValue(appId, out var game);
-                return new AppStatus
+                if (!gamesByAppId.TryGetValue(appId, out var game))
+                {
+                    apps.Add(new AppStatus { AppId = appId, Name = appId, DownloadSize = 0, IsUpToDate = false });
+                    continue;
+                }
+
+                var isUpToDate = _epicManager.IsAppUpToDate(game);
+                long downloadSize = 0;
+
+                if (!isUpToDate)
+                {
+                    try
+                    {
+                        downloadSize = await _epicManager.GetAppDownloadSizeAsync(game);
+                    }
+                    catch (Exception ex)
+                    {
+                        _progress.OnLog(LogLevel.Warning, $"Failed to get size for {game.Title}: {ex.Message}");
+                    }
+                }
+
+                totalDownloadSize += downloadSize;
+                apps.Add(new AppStatus
                 {
                     AppId = appId,
-                    Name = hasGame ? game!.Title : appId,
-                    DownloadSize = 0,
-                    IsUpToDate = hasGame && _epicManager.IsAppUpToDate(game!)
-                };
-            }).ToList();
+                    Name = game.Title,
+                    DownloadSize = downloadSize,
+                    IsUpToDate = isUpToDate
+                });
+            }
 
             return new SelectedAppsStatus
             {
                 Apps = apps,
-                TotalDownloadSize = 0,
-                Message = "Size estimation not available for Epic games"
+                TotalDownloadSize = totalDownloadSize
             };
         }
         catch (Exception ex)
@@ -260,7 +283,8 @@ public sealed class EpicPrefillApi : IDisposable
         try
         {
             await _epicManager!.DownloadMultipleAppsAsync(
-                downloadAllOwnedGames: options.DownloadAllOwnedGames);
+                downloadAllOwnedGames: options.DownloadAllOwnedGames,
+                force: options.Force);
 
             _progress.OnOperationCompleted("Prefill operation", timer.Elapsed);
 

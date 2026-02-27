@@ -42,7 +42,7 @@
             await _userAccountManager.LoginAsync();
         }
 
-        public async Task DownloadMultipleAppsAsync(bool downloadAllOwnedGames, List<string> manualIds = null)
+        public async Task DownloadMultipleAppsAsync(bool downloadAllOwnedGames, bool force = false, List<string> manualIds = null)
         {
             var allOwnedGames = await GetAvailableGamesAsync();
 
@@ -66,7 +66,7 @@
                 var app = allOwnedGames.First(e => e.AppId == appId);
                 try
                 {
-                    await DownloadSingleAppAsync(app);
+                    await DownloadSingleAppAsync(app, force);
                 }
                 catch (Exception e) when (e is LancacheNotFoundException)
                 {
@@ -101,10 +101,10 @@
             });
         }
 
-        private async Task DownloadSingleAppAsync(AppInfo app)
+        private async Task DownloadSingleAppAsync(AppInfo app, bool force = false)
         {
             // Only download the app if it isn't up to date
-            if (_downloadArgs.Force == false && _appInfoHandler.AppIsUpToDate(app))
+            if (force == false && _downloadArgs.Force == false && _appInfoHandler.AppIsUpToDate(app))
             {
                 _prefillSummaryResult.AlreadyUpToDate++;
                 var cachedAppInfo = new AppDownloadInfo { AppId = app.AppId, Name = app.Title, TotalBytes = 0 };
@@ -184,6 +184,18 @@
         /// Checks if an app's current build version has been previously downloaded.
         /// </summary>
         public bool IsAppUpToDate(AppInfo app) => _appInfoHandler.AppIsUpToDate(app);
+
+        /// <summary>
+        /// Gets the download size for an app by downloading and parsing its manifest.
+        /// Returns 0 if the size cannot be determined.
+        /// </summary>
+        public async Task<long> GetAppDownloadSizeAsync(AppInfo app)
+        {
+            var manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app);
+            var rawManifestBytes = await _manifestHandler.DownloadManifestAsync(app, manifestDownloadUrl);
+            var chunkDownloadQueue = _manifestHandler.ParseManifest(rawManifestBytes, manifestDownloadUrl);
+            return chunkDownloadQueue.Sum(e => (long)e.DownloadSizeBytes);
+        }
 
         #region Select Apps
 
