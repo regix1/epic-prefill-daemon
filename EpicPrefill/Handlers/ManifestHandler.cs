@@ -6,7 +6,7 @@
         private readonly IAnsiConsole _ansiConsole;
         private readonly HttpClientFactory _httpClientFactory;
 
-        public ManifestHandler(IAnsiConsole ansiConsole, HttpClientFactory httpClientFactory, DownloadArguments downloadArguments)
+        public ManifestHandler(IAnsiConsole ansiConsole, HttpClientFactory httpClientFactory)
         {
             _ansiConsole = ansiConsole;
             _httpClientFactory = httpClientFactory;

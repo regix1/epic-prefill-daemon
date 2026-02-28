@@ -214,7 +214,7 @@ public sealed class SocketCommandInterface : IDisposable
         {
             if (_loginCts != null) await _loginCts.CancelAsync();
         }
-        catch { }
+        catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error cancelling login CTS: {ex.Message}"); }
 
         CleanupApiInstance();
         await BroadcastStatusAsync("awaiting-login", "Login cancelled - ready for new attempt");
@@ -237,7 +237,7 @@ public sealed class SocketCommandInterface : IDisposable
 
         _progress.OnLog(LogLevel.Info, "Cancelling prefill...");
         try { _prefillCts?.Cancel(); }
-        catch { }
+        catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error cancelling prefill CTS: {ex.Message}"); }
 
         return new CommandResponse
         {
@@ -503,7 +503,7 @@ public sealed class SocketCommandInterface : IDisposable
             _api?.Shutdown();
             _api?.Dispose();
         }
-        catch { }
+        catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error during API cleanup: {ex.Message}"); }
         _api = null;
         _isLoggedIn = false;
         _isLoggingIn = false;

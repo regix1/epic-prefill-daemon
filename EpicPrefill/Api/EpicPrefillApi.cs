@@ -317,27 +317,29 @@ public sealed class EpicPrefillApi : IDisposable
         }
     }
 
-    public static ClearCacheResult ClearCache()
+    private static (int FileCount, long TotalBytes)? GetCacheStats()
     {
         var tempDir = new DirectoryInfo(AppConfig.TempDir);
-
         if (!tempDir.Exists)
-        {
-            return new ClearCacheResult { Success = true, FileCount = 0, BytesCleared = 0, Message = "Cache directory is already empty" };
-        }
+            return null;
 
         var tempFiles = tempDir.EnumerateFiles("*.*", SearchOption.AllDirectories).ToList();
-        var totalBytes = tempFiles.Sum(e => e.Length);
-        var fileCount = tempFiles.Count;
+        return (tempFiles.Count, tempFiles.Sum(e => e.Length));
+    }
 
-        if (fileCount == 0)
+    public static ClearCacheResult ClearCache()
+    {
+        var stats = GetCacheStats();
+        if (stats is not { FileCount: > 0 })
         {
             return new ClearCacheResult { Success = true, FileCount = 0, BytesCleared = 0, Message = "Cache directory is already empty" };
         }
+
+        var (fileCount, totalBytes) = stats.Value;
 
         try
         {
-            Directory.Delete(tempDir.FullName, true);
+            Directory.Delete(AppConfig.TempDir, true);
             Directory.CreateDirectory(AppConfig.TempDir);
             var clearedSize = ByteSize.FromBytes(totalBytes);
             return new ClearCacheResult
@@ -356,23 +358,21 @@ public sealed class EpicPrefillApi : IDisposable
 
     public static ClearCacheResult GetCacheInfo()
     {
-        var tempDir = new DirectoryInfo(AppConfig.TempDir);
-
-        if (!tempDir.Exists)
+        var stats = GetCacheStats();
+        if (stats == null)
         {
             return new ClearCacheResult { Success = true, FileCount = 0, BytesCleared = 0, Message = "Cache directory is empty" };
         }
 
-        var tempFiles = tempDir.EnumerateFiles("*.*", SearchOption.AllDirectories).ToList();
-        var totalBytes = tempFiles.Sum(e => e.Length);
+        var (fileCount, totalBytes) = stats.Value;
         var cacheSize = ByteSize.FromBytes(totalBytes);
 
         return new ClearCacheResult
         {
             Success = true,
-            FileCount = tempFiles.Count,
+            FileCount = fileCount,
             BytesCleared = totalBytes,
-            Message = $"Cache contains {tempFiles.Count} files ({cacheSize.ToDecimalString()})"
+            Message = $"Cache contains {fileCount} files ({cacheSize.ToDecimalString()})"
         };
     }
 

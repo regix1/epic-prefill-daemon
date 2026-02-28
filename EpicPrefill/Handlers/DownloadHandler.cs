@@ -1,4 +1,4 @@
-﻿using System.Threading;
+using System.Threading;
 
 namespace EpicPrefill.Handlers
 {
@@ -30,7 +30,7 @@ namespace EpicPrefill.Handlers
         /// false will be returned
         /// </summary>
         /// <returns>True if all downloads succeeded.  False if downloads failed 3 times.</returns>
-        public async Task<bool> DownloadQueuedChunksAsync(List<QueuedRequest> queuedRequests, ManifestUrl manifestUrl, CancellationToken cancellationToken = default)
+        public async Task<bool> DownloadQueuedChunksAsync(List<QueuedRequest> queuedRequests, ManifestUrl manifestUrl, string? appId = null, string? appName = null, CancellationToken cancellationToken = default)
         {
 #if DEBUG
             if (AppConfig.SkipDownloads)
@@ -50,7 +50,7 @@ namespace EpicPrefill.Handlers
             {
                 //TODO should probably implement cycling through available CDNs when one fails
                 // Run the initial download
-                failedRequests = await AttemptDownloadAsync(ctx, "Downloading..", queuedRequests, new Uri(manifestUrl.ManifestDownloadUrl), cancellationToken: cancellationToken);
+                failedRequests = await AttemptDownloadAsync(ctx, "Downloading..", queuedRequests, new Uri(manifestUrl.ManifestDownloadUrl), appId: appId, appName: appName, cancellationToken: cancellationToken);
 
                 // Handle any failed requests
                 while (failedRequests.Any() && retryCount < 2)
@@ -59,7 +59,7 @@ namespace EpicPrefill.Handlers
                     retryCount++;
                     await Task.Delay(2000 * retryCount, cancellationToken);
                     var upstreamCdn = new Uri(manifestUrl.ManifestDownloadUrl);
-                    failedRequests = await AttemptDownloadAsync(ctx, $"Retrying  {retryCount}..", failedRequests.ToList(), upstreamCdn, forceRecache: true, cancellationToken: cancellationToken);
+                    failedRequests = await AttemptDownloadAsync(ctx, $"Retrying  {retryCount}..", failedRequests.ToList(), upstreamCdn, forceRecache: true, appId: appId, appName: appName, cancellationToken: cancellationToken);
                 }
             });
 
@@ -74,14 +74,13 @@ namespace EpicPrefill.Handlers
             return false;
         }
 
-        //TODO I don't like the number of parameters here, should maybe rethink the way this is written.
         /// <summary>
         /// Attempts to download the specified requests.  Returns a list of any requests that have failed for any reason.
         /// </summary>
         /// <param name="forceRecache">When specified, will cause the cache to delete the existing cached data for a request, and redownload it again.</param>
         /// <returns>A list of failed requests</returns>
         private async Task<ConcurrentBag<QueuedRequest>> AttemptDownloadAsync(ProgressContext ctx, string taskTitle, List<QueuedRequest> requestsToDownload,
-                                                                                Uri upstreamCdn, bool forceRecache = false, CancellationToken cancellationToken = default)
+                                                                                Uri upstreamCdn, bool forceRecache = false, string? appId = null, string? appName = null, CancellationToken cancellationToken = default)
         {
             double requestTotalSize = requestsToDownload.Sum(e => (long)e.DownloadSizeBytes);
             var progressTask = ctx.AddTask(taskTitle, new ProgressTaskSettings { MaxValue = requestTotalSize });
@@ -91,6 +90,9 @@ namespace EpicPrefill.Handlers
             var startTime = DateTime.UtcNow;
             var lastProgressReport = DateTime.MinValue;
             var progressThrottle = TimeSpan.FromMilliseconds(250);
+
+            var progressAppId = appId ?? upstreamCdn.Host;
+            var progressAppName = appName ?? upstreamCdn.Host;
 
             await Parallel.ForEachAsync(requestsToDownload, new ParallelOptions { MaxDegreeOfParallelism = AppConfig.MaxConcurrentRequests, CancellationToken = cancellationToken }, async (chunk, ct) =>
             {
@@ -138,8 +140,8 @@ namespace EpicPrefill.Handlers
 
                     _progress.OnDownloadProgress(new DownloadProgressInfo
                     {
-                        AppId = upstreamCdn.Host,
-                        AppName = upstreamCdn.Host,
+                        AppId = progressAppId,
+                        AppName = progressAppName,
                         TotalBytes = (long)requestTotalSize,
                         BytesDownloaded = downloaded,
                         BytesPerSecond = bytesPerSecond,
@@ -156,8 +158,8 @@ namespace EpicPrefill.Handlers
             var finalBytesPerSecond = finalElapsed.TotalSeconds > 0 ? bytesDownloaded / finalElapsed.TotalSeconds : 0;
             _progress.OnDownloadProgress(new DownloadProgressInfo
             {
-                AppId = upstreamCdn.Host,
-                AppName = upstreamCdn.Host,
+                AppId = progressAppId,
+                AppName = progressAppName,
                 TotalBytes = (long)requestTotalSize,
                 BytesDownloaded = (long)requestTotalSize,
                 BytesPerSecond = finalBytesPerSecond,

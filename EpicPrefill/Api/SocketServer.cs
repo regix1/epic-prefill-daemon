@@ -371,7 +371,7 @@ public sealed class SocketServer : IAsyncDisposable
         if (_mode == SocketServerMode.UnixSocket && _socketPath != null && File.Exists(_socketPath))
         {
             try { File.Delete(_socketPath); }
-            catch { }
+            catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Failed to delete socket file {_socketPath}: {ex.Message}"); }
         }
 
         _progress.OnLog(LogLevel.Info, "Socket server stopped");
@@ -423,7 +423,7 @@ public sealed class SocketServer : IAsyncDisposable
             CancellationTokenSource.Dispose();
             SendLock.Dispose();
             try { Socket.Shutdown(SocketShutdown.Both); }
-            catch { }
+            catch (SocketException) { /* Socket already disconnected */ }
             Socket.Dispose();
         }
     }

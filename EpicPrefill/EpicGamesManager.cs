@@ -1,9 +1,6 @@
 ﻿namespace EpicPrefill
 {
-    //TODO document
-    //TODO fix this warning
-    [SuppressMessage("Design", "CA1001:Types that own disposable fields should be disposable", Justification = "Fix this.")]
-    public sealed class EpicGamesManager
+    public sealed class EpicGamesManager : IDisposable
     {
         private readonly IAnsiConsole _ansiConsole;
         private readonly DownloadArguments _downloadArgs;
@@ -33,10 +30,9 @@
 
             _httpClientFactory = new HttpClientFactory(_ansiConsole, _userAccountManager);
             _epicApi = new EpicGamesApi(_ansiConsole, _httpClientFactory);
-            _manifestHandler = new ManifestHandler(_ansiConsole, _httpClientFactory, _downloadArgs);
+            _manifestHandler = new ManifestHandler(_ansiConsole, _httpClientFactory);
         }
 
-        //TODO inline this method
         public async Task InitializeAsync()
         {
             await _userAccountManager.LoginAsync();
@@ -180,7 +176,7 @@
             _ansiConsole.LogMarkupVerbose($"Downloading {Magenta(totalBytes.ToDecimalString())} from {LightYellow(chunkDownloadQueue.Count)} chunks");
 
             // Finally run the queued downloads
-            var downloadSuccessful = await _downloadHandler.DownloadQueuedChunksAsync(chunkDownloadQueue, manifestDownloadUrl, cancellationToken);
+            var downloadSuccessful = await _downloadHandler.DownloadQueuedChunksAsync(chunkDownloadQueue, manifestDownloadUrl, appId: app.AppId, appName: app.Title, cancellationToken: cancellationToken);
             if (downloadSuccessful)
             {
                 // Logging some metrics about the download
@@ -236,6 +232,11 @@
             var rawManifestBytes = await _manifestHandler.DownloadManifestAsync(app, manifestDownloadUrl);
             var chunkDownloadQueue = _manifestHandler.ParseManifest(rawManifestBytes, manifestDownloadUrl);
             return chunkDownloadQueue.Sum(e => (long)e.DownloadSizeBytes);
+        }
+
+        public void Dispose()
+        {
+            _downloadHandler.Dispose();
         }
 
         #region Select Apps
