@@ -1,4 +1,4 @@
-﻿namespace EpicPrefill.Models.Manifests
+namespace EpicPrefill.Models.Manifests
 {
     //TODO document
     //TODO can this be combined with the other manifest models
@@ -11,7 +11,6 @@
         public ulong ManifestFileVersionNum;
 
         public Dictionary<string, string> ChunkHashList { get; set; }
-        public Dictionary<string, string> ChunkShaList { get; set; }
         public Dictionary<string, string> DataGroupList { get; set; }
         public Dictionary<string, string> ChunkFilesizeList { get; set; }
 

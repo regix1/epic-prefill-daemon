@@ -16,6 +16,12 @@ public enum SocketServerMode
 
 public sealed class SocketServer : IAsyncDisposable
 {
+    private static readonly HashSet<string> RedactedTypes = new(StringComparer.OrdinalIgnoreCase)
+    {
+        "provide-credential",
+        "auth"
+    };
+
     private readonly SocketServerMode _mode;
     private readonly string? _socketPath;
     private readonly int _tcpPort;
@@ -29,8 +35,6 @@ public sealed class SocketServer : IAsyncDisposable
     private bool _disposed;
 
     public Func<CommandRequest, CancellationToken, Task<CommandResponse>>? OnCommand { get; set; }
-    public event Action<string>? OnClientConnected;
-    public event Action<string>? OnClientDisconnected;
 
     public SocketServer(string socketPath, IPrefillProgress? progress = null)
     {
@@ -127,7 +131,6 @@ public sealed class SocketServer : IAsyncDisposable
 
                 _clients[clientId] = client;
                 _progress.OnLog(LogLevel.Info, $"Client connected: {clientId}");
-                OnClientConnected?.Invoke(clientId);
 
                 _ = HandleClientAsync(client, cancellationToken);
             }
@@ -149,7 +152,7 @@ public sealed class SocketServer : IAsyncDisposable
 
         try
         {
-            using var stream = new NetworkStream(client.Socket, ownsSocket: false);
+            var stream = client.Stream;
 
             while (!token.IsCancellationRequested)
             {
@@ -175,10 +178,9 @@ public sealed class SocketServer : IAsyncDisposable
                     var root = doc.RootElement;
                     var type = root.TryGetProperty("type", out var typeProp) ? typeProp.GetString() : "unknown";
                     var id = root.TryGetProperty("id", out var idProp) ? idProp.GetString() : "unknown";
-                    var redactedTypes = new HashSet<string>(StringComparer.OrdinalIgnoreCase) { "provide-credential", "auth" };
 
                     _progress.OnLog(LogLevel.Debug,
-                        redactedTypes.Contains(type ?? string.Empty)
+                        RedactedTypes.Contains(type ?? string.Empty)
                             ? $"Received from {client.Id}: {type} (id: {id}) [redacted]"
                             : $"Received from {client.Id}: {type} (id: {id})");
                 }
@@ -251,7 +253,6 @@ public sealed class SocketServer : IAsyncDisposable
             _clients.TryRemove(client.Id, out _);
             client.Dispose();
             _progress.OnLog(LogLevel.Info, $"Client disconnected: {client.Id}");
-            OnClientDisconnected?.Invoke(client.Id);
         }
     }
 
@@ -276,24 +277,6 @@ public sealed class SocketServer : IAsyncDisposable
         await Task.WhenAll(tasks);
     }
 
-    public async Task SendCredentialChallengeAsync(string clientId, SocketEvent<CredentialChallenge> eventData, CancellationToken cancellationToken = default)
-    {
-        if (_clients.TryGetValue(clientId, out var client))
-            await SendEventToClientInternalAsync(client, eventData, DaemonSerializationContext.Default.SocketEventCredentialChallenge, cancellationToken);
-    }
-
-    public async Task SendProgressAsync(string clientId, SocketEvent<PrefillProgressUpdate> eventData, CancellationToken cancellationToken = default)
-    {
-        if (_clients.TryGetValue(clientId, out var client))
-            await SendEventToClientInternalAsync(client, eventData, DaemonSerializationContext.Default.SocketEventPrefillProgressUpdate, cancellationToken);
-    }
-
-    public async Task SendAuthStateAsync(string clientId, SocketEvent<AuthStateData> eventData, CancellationToken cancellationToken = default)
-    {
-        if (_clients.TryGetValue(clientId, out var client))
-            await SendEventToClientInternalAsync(client, eventData, DaemonSerializationContext.Default.SocketEventAuthStateData, cancellationToken);
-    }
-
     private async Task SendEventToClientInternalAsync<T>(ConnectedClient client, T eventData, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
     {
         try
@@ -304,7 +287,7 @@ public sealed class SocketServer : IAsyncDisposable
                 var json = JsonSerializer.Serialize(eventData, typeInfo);
                 var bytes = Encoding.UTF8.GetBytes(json);
 
-                using var stream = new NetworkStream(client.Socket, ownsSocket: false);
+                var stream = client.Stream;
                 await stream.WriteAsync(BitConverter.GetBytes(bytes.Length), cancellationToken);
                 await stream.WriteAsync(bytes, cancellationToken);
                 await stream.FlushAsync(cancellationToken);
@@ -331,12 +314,6 @@ public sealed class SocketServer : IAsyncDisposable
         DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
     };
 
-    private async Task SendMessageAsync<T>(ConnectedClient client, T message, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
-    {
-        var json = JsonSerializer.Serialize(message, typeInfo);
-        await SendRawJsonAsync(client, json, cancellationToken);
-    }
-
     private async Task SendMessageAsync<T>(ConnectedClient client, T message, JsonSerializerOptions options, CancellationToken cancellationToken)
     {
         var json = JsonSerializer.Serialize(message, options);
@@ -350,7 +327,7 @@ public sealed class SocketServer : IAsyncDisposable
         {
             var bytes = Encoding.UTF8.GetBytes(json);
 
-            using var stream = new NetworkStream(client.Socket, ownsSocket: false);
+            var stream = client.Stream;
             await stream.WriteAsync(BitConverter.GetBytes(bytes.Length), cancellationToken);
             await stream.WriteAsync(bytes, cancellationToken);
             await stream.FlushAsync(cancellationToken);
@@ -429,6 +406,7 @@ public sealed class SocketServer : IAsyncDisposable
     {
         public string Id { get; }
         public Socket Socket { get; }
+        public NetworkStream Stream { get; }
         public SemaphoreSlim SendLock { get; } = new(1, 1);
         public CancellationTokenSource CancellationTokenSource { get; } = new();
         public CancellationToken CancellationToken => CancellationTokenSource.Token;
@@ -438,6 +416,7 @@ public sealed class SocketServer : IAsyncDisposable
         {
             Id = id;
             Socket = socket;
+            Stream = new NetworkStream(socket, ownsSocket: false);
         }
 
         public void Dispose()
@@ -445,6 +424,7 @@ public sealed class SocketServer : IAsyncDisposable
             CancellationTokenSource.Cancel();
             CancellationTokenSource.Dispose();
             SendLock.Dispose();
+            Stream.Dispose();
             try { Socket.Shutdown(SocketShutdown.Both); }
             catch (SocketException) { /* Socket already disconnected */ }
             Socket.Dispose();

@@ -1,4 +1,4 @@
-﻿namespace EpicPrefill.Models.Manifests
+namespace EpicPrefill.Models.Manifests
 {
     public sealed class BinaryManifest
     {
@@ -114,10 +114,10 @@
                 chunkInfos[i].GroupNum = br.ReadByte();
             }
 
-            // Uncompressed size
+            // Uncompressed size (read but discard - not used)
             for (int i = 0; i < count; i++)
             {
-                chunkInfos[i].UncompressedSize = br.ReadUInt32();
+                _ = br.ReadUInt32();
             }
 
             // File size - the compressed size that will need to be downloaded

@@ -1,4 +1,4 @@
-﻿namespace EpicPrefill.Models.Manifests
+namespace EpicPrefill.Models.Manifests
 {
     public struct CdnChunk
     {
@@ -18,17 +18,10 @@
         /// </summary>
         public byte GroupNum;
 
-        public uint UncompressedSize;
-
         /// <summary>
         /// The download size of the chunk.
         /// </summary>
         public ulong CompressedFileSize;
-
-        /// <summary>
-        /// Seems to be the manifest file format version.  Haven't seen any version that isn't 18.
-        /// </summary>
-        public long ManifestVersion => 18;
 
         // ChunksV4 is usually determined by the manifest version, however it seems it that it never changes since the manifests are always 18
         public string Uri => Path.Join("ChunksV4", GroupNum.ToString("D2"), $"{Hash}_{Guid}.chunk");

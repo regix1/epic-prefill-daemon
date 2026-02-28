@@ -4,6 +4,8 @@ namespace EpicPrefill.Handlers
 {
     public sealed class DownloadHandler : IDisposable
     {
+        private const int MaxDownloadRetries = 2;
+
         private readonly IAnsiConsole _ansiConsole;
         private readonly HttpClient _client;
         private readonly IPrefillProgress _progress;
@@ -32,12 +34,10 @@ namespace EpicPrefill.Handlers
         /// <returns>True if all downloads succeeded.  False if downloads failed 3 times.</returns>
         public async Task<bool> DownloadQueuedChunksAsync(List<QueuedRequest> queuedRequests, ManifestUrl manifestUrl, string? appId = null, string? appName = null, CancellationToken cancellationToken = default)
         {
-#if DEBUG
             if (AppConfig.SkipDownloads)
             {
                 return true;
             }
-#endif
             if (_lancacheAddress == null)
             {
                 var cdnUrl = manifestUrl.ManifestDownloadUri.Host;
@@ -53,7 +53,7 @@ namespace EpicPrefill.Handlers
                 failedRequests = await AttemptDownloadAsync(ctx, "Downloading..", queuedRequests, new Uri(manifestUrl.ManifestDownloadUrl), appId: appId, appName: appName, cancellationToken: cancellationToken);
 
                 // Handle any failed requests
-                while (failedRequests.Any() && retryCount < 2)
+                while (failedRequests.Any() && retryCount < MaxDownloadRetries)
                 {
                     cancellationToken.ThrowIfCancellationRequested();
                     retryCount++;
@@ -88,7 +88,7 @@ namespace EpicPrefill.Handlers
             var failedRequests = new ConcurrentBag<QueuedRequest>();
             long bytesDownloaded = 0;
             var startTime = DateTime.UtcNow;
-            var lastProgressReport = DateTime.MinValue;
+            long lastProgressReportTicks = 0;
             var progressThrottle = TimeSpan.FromMilliseconds(250);
 
             var progressAppId = appId ?? upstreamCdn.Host;
@@ -132,21 +132,25 @@ namespace EpicPrefill.Handlers
                 // Report progress via IPrefillProgress (throttled)
                 var downloaded = Interlocked.Add(ref bytesDownloaded, (long)chunk.DownloadSizeBytes);
                 var now = DateTime.UtcNow;
-                if (now - lastProgressReport >= progressThrottle)
+                var nowTicks = now.Ticks;
+                long prevTicks = Volatile.Read(ref lastProgressReportTicks);
+                if (prevTicks == 0 || (nowTicks - prevTicks) >= progressThrottle.Ticks)
                 {
-                    lastProgressReport = now;
-                    var elapsed = now - startTime;
-                    var bytesPerSecond = elapsed.TotalSeconds > 0 ? downloaded / elapsed.TotalSeconds : 0;
-
-                    _progress.OnDownloadProgress(new DownloadProgressInfo
+                    if (Interlocked.CompareExchange(ref lastProgressReportTicks, nowTicks, prevTicks) == prevTicks)
                     {
-                        AppId = progressAppId,
-                        AppName = progressAppName,
-                        TotalBytes = (long)requestTotalSize,
-                        BytesDownloaded = downloaded,
-                        BytesPerSecond = bytesPerSecond,
-                        Elapsed = elapsed
-                    });
+                        var elapsed = now - startTime;
+                        var bytesPerSecond = elapsed.TotalSeconds > 0 ? downloaded / elapsed.TotalSeconds : 0;
+
+                        _progress.OnDownloadProgress(new DownloadProgressInfo
+                        {
+                            AppId = progressAppId,
+                            AppName = progressAppName,
+                            TotalBytes = (long)requestTotalSize,
+                            BytesDownloaded = downloaded,
+                            BytesPerSecond = bytesPerSecond,
+                            Elapsed = elapsed
+                        });
+                    }
                 }
             });
 

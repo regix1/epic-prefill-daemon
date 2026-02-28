@@ -1,4 +1,4 @@
-﻿namespace EpicPrefill.Models.ApiResponses
+namespace EpicPrefill.Models.ApiResponses
 {
     //TODO document and figure out which fields arent needed
     public class OauthToken
@@ -14,11 +14,5 @@
 
         [JsonPropertyName("refresh_expires_at")]
         public DateTime RefreshTokenExpiresAt { get; set; }
-
-        [JsonPropertyName("account_id")]
-        public string AccountId { get; set; }
-
-        [JsonPropertyName("displayName")]
-        public string DisplayName { get; set; }
     }
 }

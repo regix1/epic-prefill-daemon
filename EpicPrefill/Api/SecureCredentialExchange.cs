@@ -162,66 +162,6 @@ public sealed class SecureCredentialExchange : IDisposable
         }
     }
 
-    public static EncryptedCredentialResponse EncryptCredential(
-        string challengeId,
-        string serverPublicKeyBase64,
-        string credential)
-    {
-        var serverPublicKeyBytes = Convert.FromBase64String(serverPublicKeyBase64);
-
-        using var clientEcdh = ECDiffieHellman.Create(ECCurve.NamedCurves.nistP256);
-        var clientParams = clientEcdh.ExportParameters(true);
-
-        var clientPublicKey = new byte[65];
-        clientPublicKey[0] = 0x04;
-        Array.Copy(clientParams.Q.X!, 0, clientPublicKey, 1, 32);
-        Array.Copy(clientParams.Q.Y!, 0, clientPublicKey, 33, 32);
-
-        using var serverEcdh = ECDiffieHellman.Create();
-        var serverParams = new ECParameters
-        {
-            Curve = ECCurve.NamedCurves.nistP256,
-            Q = new ECPoint
-            {
-                X = serverPublicKeyBytes.AsSpan(1, 32).ToArray(),
-                Y = serverPublicKeyBytes.AsSpan(33, 32).ToArray()
-            }
-        };
-        serverEcdh.ImportParameters(serverParams);
-
-        var sharedSecret = clientEcdh.DeriveKeyMaterial(serverEcdh.PublicKey);
-
-        var aesKey = HKDF.DeriveKey(
-            HashAlgorithmName.SHA256,
-            sharedSecret,
-            32,
-            Encoding.UTF8.GetBytes(challengeId),
-            Encoding.UTF8.GetBytes("EpicPrefill-Credential-Encryption"));
-
-        var nonce = new byte[12];
-        RandomNumberGenerator.Fill(nonce);
-
-        var plaintextBytes = Encoding.UTF8.GetBytes(credential);
-        var ciphertext = new byte[plaintextBytes.Length];
-        var tag = new byte[16];
-
-        using var aesGcm = new AesGcm(aesKey, 16);
-        aesGcm.Encrypt(nonce, plaintextBytes, ciphertext, tag);
-
-        CryptographicOperations.ZeroMemory(sharedSecret);
-        CryptographicOperations.ZeroMemory(aesKey);
-        CryptographicOperations.ZeroMemory(plaintextBytes);
-
-        return new EncryptedCredentialResponse
-        {
-            ChallengeId = challengeId,
-            ClientPublicKey = Convert.ToBase64String(clientPublicKey),
-            EncryptedCredential = Convert.ToBase64String(ciphertext),
-            Nonce = Convert.ToBase64String(nonce),
-            Tag = Convert.ToBase64String(tag)
-        };
-    }
-
     public void Dispose()
     {
         if (_disposed) return;

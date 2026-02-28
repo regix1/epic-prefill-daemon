@@ -413,10 +413,6 @@ public class PrefillResult
 {
     public bool Success { get; init; }
     public string? ErrorMessage { get; init; }
-    public int AppsUpdated { get; init; }
-    public int AppsAlreadyUpToDate { get; init; }
-    public int AppsFailed { get; init; }
-    public long TotalBytesTransferred { get; init; }
     public TimeSpan TotalTime { get; init; }
 }
 

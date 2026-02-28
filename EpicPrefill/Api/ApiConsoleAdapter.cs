@@ -13,7 +13,6 @@ internal sealed class ApiConsoleAdapter : IAnsiConsole
 {
     private readonly IEpicAuthProvider _authProvider;
     private readonly IPrefillProgress _progress;
-    private readonly StringBuilder _outputBuffer = new();
 
     public ApiConsoleAdapter(IEpicAuthProvider authProvider, IPrefillProgress progress)
     {
@@ -25,13 +24,12 @@ internal sealed class ApiConsoleAdapter : IAnsiConsole
 
     public Spectre.Console.Profile Profile { get; }
     public IAnsiConsoleCursor Cursor => new NullCursor();
-    public IAnsiConsoleInput Input => new ApiConsoleInput(_authProvider);
+    public IAnsiConsoleInput Input => new ApiConsoleInput();
     public IExclusivityMode ExclusivityMode => new NoExclusivityMode();
     public RenderPipeline Pipeline => new();
 
     public void Clear(bool home)
     {
-        _outputBuffer.Clear();
     }
 
     public void Write(IRenderable renderable)
@@ -69,11 +67,6 @@ internal sealed class ApiConsoleAdapter : IAnsiConsole
         }
     }
 
-    private static string StripMarkup(string text)
-    {
-        return System.Text.RegularExpressions.Regex.Replace(text, @"\[/?[^\]]+\]", "");
-    }
-
     private class NullCursor : IAnsiConsoleCursor
     {
         public void Move(CursorDirection direction, int steps) { }
@@ -83,13 +76,6 @@ internal sealed class ApiConsoleAdapter : IAnsiConsole
 
     private class ApiConsoleInput : IAnsiConsoleInput
     {
-        private readonly IEpicAuthProvider _authProvider;
-
-        public ApiConsoleInput(IEpicAuthProvider authProvider)
-        {
-            _authProvider = authProvider;
-        }
-
         public bool IsKeyAvailable() => false;
 
         public ConsoleKeyInfo? ReadKey(bool intercept)

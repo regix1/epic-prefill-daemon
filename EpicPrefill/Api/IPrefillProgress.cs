@@ -76,24 +76,3 @@ public class NullProgress : IPrefillProgress
     public void OnPrefillCompleted(PrefillSummary summary) { }
     public void OnError(string message, Exception? exception = null) { }
 }
-
-public class CallbackProgress : IPrefillProgress
-{
-    public event Action<LogLevel, string>? LogReceived;
-    public event Action<string>? OperationStarted;
-    public event Action<string, TimeSpan>? OperationCompleted;
-    public event Action<AppDownloadInfo>? AppStarted;
-    public event Action<DownloadProgressInfo>? DownloadProgressUpdated;
-    public event Action<AppDownloadInfo, AppDownloadResult>? AppCompleted;
-    public event Action<PrefillSummary>? PrefillCompleted;
-    public event Action<string, Exception?>? ErrorOccurred;
-
-    public void OnLog(LogLevel level, string message) => LogReceived?.Invoke(level, message);
-    public void OnOperationStarted(string operationName) => OperationStarted?.Invoke(operationName);
-    public void OnOperationCompleted(string operationName, TimeSpan elapsed) => OperationCompleted?.Invoke(operationName, elapsed);
-    public void OnAppStarted(AppDownloadInfo app) => AppStarted?.Invoke(app);
-    public void OnDownloadProgress(DownloadProgressInfo progress) => DownloadProgressUpdated?.Invoke(progress);
-    public void OnAppCompleted(AppDownloadInfo app, AppDownloadResult result) => AppCompleted?.Invoke(app, result);
-    public void OnPrefillCompleted(PrefillSummary summary) => PrefillCompleted?.Invoke(summary);
-    public void OnError(string message, Exception? exception = null) => ErrorOccurred?.Invoke(message, exception);
-}

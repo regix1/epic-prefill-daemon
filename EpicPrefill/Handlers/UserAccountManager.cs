@@ -1,4 +1,4 @@
-﻿namespace EpicPrefill.Handlers
+namespace EpicPrefill.Handlers
 {
     //TODO document
     /// <summary>
@@ -87,7 +87,7 @@
                 retryCount++;
             }
 
-            if (retryCount == 3)
+            if (retryCount >= MaxRetries)
             {
                 throw new EpicLoginException("Unable to login to Epic!  Try again in a few moments...");
             }
