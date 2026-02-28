@@ -1,5 +1,6 @@
 using Spectre.Console;
 using Spectre.Console.Rendering;
+using System.Linq;
 using System.Text;
 
 namespace EpicPrefill.Api;
@@ -44,24 +45,28 @@ internal sealed class ApiConsoleAdapter : IAnsiConsole
 
     private string ExtractText(IRenderable renderable)
     {
-        if (renderable is Text textRenderable)
-            return textRenderable.ToString() ?? string.Empty;
-
-        if (renderable is Markup markup)
-            return StripMarkup(markup.ToString() ?? string.Empty);
-
-        if (renderable is Paragraph paragraph)
-            return paragraph.ToString() ?? string.Empty;
-
-        var typeName = renderable.GetType().Name;
-        if (typeName is "ControlCode" or "Segment" or "ControlSequence")
-            return string.Empty;
-
-        var text = renderable.ToString() ?? string.Empty;
-        if (text.StartsWith("Spectre.Console."))
-            return string.Empty;
-
-        return text;
+        // Render the IRenderable to plain text using a temporary Spectre console
+        try
+        {
+            var writer = new System.IO.StringWriter();
+            var settings = new AnsiConsoleSettings
+            {
+                Out = new AnsiConsoleOutput(writer),
+                Ansi = AnsiSupport.No,
+                ColorSystem = ColorSystemSupport.NoColors,
+                Interactive = InteractionSupport.No
+            };
+            var tempConsole = AnsiConsole.Create(settings);
+            tempConsole.Write(renderable);
+            var text = writer.ToString().Trim();
+            return string.IsNullOrWhiteSpace(text) ? string.Empty : text;
+        }
+        catch
+        {
+            // Fallback: try ToString but filter out Spectre type names
+            var text = renderable.ToString() ?? string.Empty;
+            return text.StartsWith("Spectre.Console.") ? string.Empty : text;
+        }
     }
 
     private static string StripMarkup(string text)
