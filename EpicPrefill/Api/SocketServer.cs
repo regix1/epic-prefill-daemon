@@ -239,8 +239,7 @@ public sealed class SocketServer : IAsyncDisposable
                     response = new CommandResponse { Id = "error", Success = false, Error = ex.Message };
                 }
 
-                // Use reflection-based JSON for CommandResponse because Data is object?
-                await SendMessageAsync(client, response, CommandResponseJsonOptions, token);
+                await SendMessageAsync(client, response, DaemonSerializationContext.Default.CommandResponse, token);
             }
         }
         catch (OperationCanceledException) { }
@@ -303,20 +302,9 @@ public sealed class SocketServer : IAsyncDisposable
         }
     }
 
-    /// <summary>
-    /// Reflection-based JSON options for CommandResponse serialization.
-    /// Source-generated JSON cannot reliably serialize the polymorphic object? Data property.
-    /// </summary>
-    private static readonly JsonSerializerOptions CommandResponseJsonOptions = new()
+    private async Task SendMessageAsync<T>(ConnectedClient client, T message, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
     {
-        PropertyNamingPolicy = JsonNamingPolicy.CamelCase,
-        WriteIndented = true,
-        DefaultIgnoreCondition = System.Text.Json.Serialization.JsonIgnoreCondition.WhenWritingNull
-    };
-
-    private async Task SendMessageAsync<T>(ConnectedClient client, T message, JsonSerializerOptions options, CancellationToken cancellationToken)
-    {
-        var json = JsonSerializer.Serialize(message, options);
+        var json = JsonSerializer.Serialize(message, typeInfo);
         await SendRawJsonAsync(client, json, cancellationToken);
     }
 
