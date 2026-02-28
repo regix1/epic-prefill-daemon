@@ -127,8 +127,32 @@
             _progress.OnLog(LogLevel.Info, $"Starting download: {app.Title} ({app.AppId}), version: {app.BuildVersion}");
 
             // Download the latest manifest, and build the list of requests in order to download the app
-            ManifestUrl manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app);
-            var rawManifestBytes = await _manifestHandler.DownloadManifestAsync(app, manifestDownloadUrl);
+            ManifestUrl manifestDownloadUrl;
+            try
+            {
+                manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app);
+                _progress.OnLog(LogLevel.Info, $"Manifest URL: {manifestDownloadUrl.ManifestDownloadUrlWithParams}");
+                _progress.OnLog(LogLevel.Info, $"Manifest CDN host: {manifestDownloadUrl.ManifestDownloadUri.Host}");
+            }
+            catch (Exception ex)
+            {
+                _progress.OnLog(LogLevel.Error, $"Failed to get manifest URL for {app.Title} ({app.AppId}): {ex.Message}");
+                _progress.OnLog(LogLevel.Error, $"API URL was: launcher-public-service-prod06.ol.epicgames.com/launcher/api/public/assets/v2/platform/Windows/namespace/{app.Namespace}/catalogItem/{app.CatalogItemId}/app/{app.AppId}/label/Live");
+                throw;
+            }
+
+            byte[] rawManifestBytes;
+            try
+            {
+                rawManifestBytes = await _manifestHandler.DownloadManifestAsync(app, manifestDownloadUrl);
+            }
+            catch (Exception ex)
+            {
+                _progress.OnLog(LogLevel.Error, $"Failed to download manifest for {app.Title}: {ex.Message}");
+                _progress.OnLog(LogLevel.Error, $"Manifest download URL: {manifestDownloadUrl.ManifestDownloadUrlWithParams}");
+                throw;
+            }
+
             var chunkDownloadQueue = _manifestHandler.ParseManifest(rawManifestBytes, manifestDownloadUrl);
 
             // Logging some metadata about the downloads
