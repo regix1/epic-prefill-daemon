@@ -30,7 +30,7 @@ namespace EpicPrefill.Handlers
         /// false will be returned
         /// </summary>
         /// <returns>True if all downloads succeeded.  False if downloads failed 3 times.</returns>
-        public async Task<bool> DownloadQueuedChunksAsync(List<QueuedRequest> queuedRequests, ManifestUrl manifestUrl)
+        public async Task<bool> DownloadQueuedChunksAsync(List<QueuedRequest> queuedRequests, ManifestUrl manifestUrl, CancellationToken cancellationToken = default)
         {
 #if DEBUG
             if (AppConfig.SkipDownloads)
@@ -50,15 +50,16 @@ namespace EpicPrefill.Handlers
             {
                 //TODO should probably implement cycling through available CDNs when one fails
                 // Run the initial download
-                failedRequests = await AttemptDownloadAsync(ctx, "Downloading..", queuedRequests, new Uri(manifestUrl.ManifestDownloadUrl));
+                failedRequests = await AttemptDownloadAsync(ctx, "Downloading..", queuedRequests, new Uri(manifestUrl.ManifestDownloadUrl), cancellationToken: cancellationToken);
 
                 // Handle any failed requests
                 while (failedRequests.Any() && retryCount < 2)
                 {
+                    cancellationToken.ThrowIfCancellationRequested();
                     retryCount++;
-                    await Task.Delay(2000 * retryCount);
+                    await Task.Delay(2000 * retryCount, cancellationToken);
                     var upstreamCdn = new Uri(manifestUrl.ManifestDownloadUrl);
-                    failedRequests = await AttemptDownloadAsync(ctx, $"Retrying  {retryCount}..", failedRequests.ToList(), upstreamCdn, forceRecache: true);
+                    failedRequests = await AttemptDownloadAsync(ctx, $"Retrying  {retryCount}..", failedRequests.ToList(), upstreamCdn, forceRecache: true, cancellationToken: cancellationToken);
                 }
             });
 
@@ -80,7 +81,7 @@ namespace EpicPrefill.Handlers
         /// <param name="forceRecache">When specified, will cause the cache to delete the existing cached data for a request, and redownload it again.</param>
         /// <returns>A list of failed requests</returns>
         private async Task<ConcurrentBag<QueuedRequest>> AttemptDownloadAsync(ProgressContext ctx, string taskTitle, List<QueuedRequest> requestsToDownload,
-                                                                                Uri upstreamCdn, bool forceRecache = false)
+                                                                                Uri upstreamCdn, bool forceRecache = false, CancellationToken cancellationToken = default)
         {
             double requestTotalSize = requestsToDownload.Sum(e => (long)e.DownloadSizeBytes);
             var progressTask = ctx.AddTask(taskTitle, new ProgressTaskSettings { MaxValue = requestTotalSize });
@@ -91,7 +92,7 @@ namespace EpicPrefill.Handlers
             var lastProgressReport = DateTime.MinValue;
             var progressThrottle = TimeSpan.FromMilliseconds(250);
 
-            await Parallel.ForEachAsync(requestsToDownload, new ParallelOptions { MaxDegreeOfParallelism = AppConfig.MaxConcurrentRequests }, async (chunk, _) =>
+            await Parallel.ForEachAsync(requestsToDownload, new ParallelOptions { MaxDegreeOfParallelism = AppConfig.MaxConcurrentRequests, CancellationToken = cancellationToken }, async (chunk, ct) =>
             {
                 try
                 {
@@ -104,16 +105,20 @@ namespace EpicPrefill.Handlers
                     using var requestMessage = new HttpRequestMessage(HttpMethod.Get, url);
                     requestMessage.Headers.Host = upstreamCdn.Host;
 
-                    using var cts = new CancellationTokenSource();
-                    using var response = await _client.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, cts.Token);
-                    using Stream responseStream = await response.Content.ReadAsStreamAsync(cts.Token);
+                    using var response = await _client.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, ct);
+                    using Stream responseStream = await response.Content.ReadAsStreamAsync(ct);
                     response.EnsureSuccessStatusCode();
 
                     // Don't save the data anywhere, so we don't have to waste time writing it to disk.
                     var buffer = new byte[4096];
-                    while (await responseStream.ReadAsync(buffer, cts.Token) != 0)
+                    while (await responseStream.ReadAsync(buffer, ct) != 0)
                     {
                     }
+                }
+                catch (OperationCanceledException) when (ct.IsCancellationRequested)
+                {
+                    // Propagate cancellation - let Parallel.ForEachAsync stop
+                    throw;
                 }
                 catch (Exception e)
                 {

@@ -42,7 +42,7 @@
             await _userAccountManager.LoginAsync();
         }
 
-        public async Task DownloadMultipleAppsAsync(bool downloadAllOwnedGames, bool force = false, List<string> manualIds = null)
+        public async Task DownloadMultipleAppsAsync(bool downloadAllOwnedGames, bool force = false, List<string> manualIds = null, CancellationToken cancellationToken = default)
         {
             var allOwnedGames = await GetAvailableGamesAsync();
 
@@ -63,6 +63,8 @@
 
             foreach (var appId in appIdsToDownload)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 AppInfo? app = null;
                 try
                 {
@@ -77,7 +79,12 @@
                         continue;
                     }
 
-                    await DownloadSingleAppAsync(app, force);
+                    await DownloadSingleAppAsync(app, force, cancellationToken);
+                }
+                catch (OperationCanceledException)
+                {
+                    // Propagate cancellation - don't treat it as a download error
+                    throw;
                 }
                 catch (Exception e) when (e is LancacheNotFoundException)
                 {
@@ -112,7 +119,7 @@
             });
         }
 
-        private async Task DownloadSingleAppAsync(AppInfo app, bool force = false)
+        private async Task DownloadSingleAppAsync(AppInfo app, bool force = false, CancellationToken cancellationToken = default)
         {
             // Only download the app if it isn't up to date
             if (force == false && _downloadArgs.Force == false && _appInfoHandler.AppIsUpToDate(app))
@@ -173,7 +180,7 @@
             _ansiConsole.LogMarkupVerbose($"Downloading {Magenta(totalBytes.ToDecimalString())} from {LightYellow(chunkDownloadQueue.Count)} chunks");
 
             // Finally run the queued downloads
-            var downloadSuccessful = await _downloadHandler.DownloadQueuedChunksAsync(chunkDownloadQueue, manifestDownloadUrl);
+            var downloadSuccessful = await _downloadHandler.DownloadQueuedChunksAsync(chunkDownloadQueue, manifestDownloadUrl, cancellationToken);
             if (downloadSuccessful)
             {
                 // Logging some metrics about the download

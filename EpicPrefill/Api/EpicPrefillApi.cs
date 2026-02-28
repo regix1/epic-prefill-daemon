@@ -284,7 +284,8 @@ public sealed class EpicPrefillApi : IDisposable
         {
             await _epicManager!.DownloadMultipleAppsAsync(
                 downloadAllOwnedGames: options.DownloadAllOwnedGames,
-                force: options.Force);
+                force: options.Force,
+                cancellationToken: cancellationToken);
 
             _progress.OnOperationCompleted("Prefill operation", timer.Elapsed);
 
