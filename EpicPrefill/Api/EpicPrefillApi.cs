@@ -30,6 +30,8 @@ public sealed class EpicPrefillApi : IDisposable
 
     public bool IsInitialized => _isInitialized;
 
+    public string? DisplayName => _epicManager?.DisplayName;
+
     /// <summary>
     /// Initializes the API and logs into Epic Games.
     /// </summary>

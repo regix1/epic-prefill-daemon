@@ -447,10 +447,10 @@ public class ProgressEvent : SocketEvent<PrefillProgressUpdate>
 
 public class AuthStateEvent : SocketEvent<AuthStateData>
 {
-    public AuthStateEvent(string state, string? message = null)
+    public AuthStateEvent(string state, string? message = null, string? displayName = null)
     {
         Type = "auth-state";
-        Data = new AuthStateData { State = state, Message = message };
+        Data = new AuthStateData { State = state, Message = message, DisplayName = displayName };
     }
 }
 
@@ -458,4 +458,5 @@ public class AuthStateData
 {
     public string State { get; init; } = string.Empty;
     public string? Message { get; init; }
+    public string? DisplayName { get; init; }
 }

@@ -164,7 +164,7 @@ public sealed class SocketCommandInterface : IDisposable
                 _isLoggingIn = false;
                 _progress.OnLog(LogLevel.Info, "Login successful - commands now available");
 
-                await BroadcastStatusAsync("logged-in", "Authenticated and ready for commands");
+                await BroadcastStatusAsync("logged-in", "Authenticated and ready for commands", _api.DisplayName);
             }
             catch (OperationCanceledException)
             {
@@ -509,9 +509,9 @@ public sealed class SocketCommandInterface : IDisposable
         _isLoggingIn = false;
     }
 
-    private async Task BroadcastStatusAsync(string status, string message)
+    private async Task BroadcastStatusAsync(string status, string message, string? displayName = null)
     {
-        var statusEvent = new AuthStateEvent(status, message);
+        var statusEvent = new AuthStateEvent(status, message, displayName);
         await _socketServer.BroadcastAuthStateAsync(statusEvent);
     }
 

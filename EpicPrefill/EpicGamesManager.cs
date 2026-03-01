@@ -33,6 +33,8 @@
             _manifestHandler = new ManifestHandler(_ansiConsole, _httpClientFactory);
         }
 
+        public string? DisplayName => _userAccountManager.OauthToken?.DisplayName;
+
         public async Task InitializeAsync()
         {
             await _userAccountManager.LoginAsync();

@@ -14,5 +14,11 @@ namespace EpicPrefill.Models.ApiResponses
 
         [JsonPropertyName("refresh_expires_at")]
         public DateTime RefreshTokenExpiresAt { get; set; }
+
+        [JsonPropertyName("display_name")]
+        public string? DisplayName { get; set; }
+
+        [JsonPropertyName("account_id")]
+        public string? AccountId { get; set; }
     }
 }
