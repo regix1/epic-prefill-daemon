@@ -87,7 +87,8 @@ public sealed class EpicPrefillApi : IDisposable
             var result = apps.Select(a => new OwnedGame
             {
                 AppId = a.AppId,
-                Name = a.Title
+                Name = a.Title,
+                ImageUrl = a.ImageUrl
             }).ToList();
 
             _progress.OnOperationCompleted("Fetching owned games", timer.Elapsed);
@@ -96,6 +97,67 @@ public sealed class EpicPrefillApi : IDisposable
         catch (Exception ex)
         {
             _progress.OnError("Failed to fetch owned games", ex);
+            throw;
+        }
+    }
+
+    /// <summary>
+    /// Gets CDN URL patterns for owned games.
+    /// For each game, resolves the manifest URL to extract the CDN host and chunk base URL.
+    /// These patterns can be used to identify which game a cached download belongs to.
+    /// </summary>
+    public async Task<CdnInfoResult> GetCdnInfoAsync(List<string>? appIds = null, CancellationToken cancellationToken = default)
+    {
+        ThrowIfNotInitialized();
+        ThrowIfDisposed();
+
+        _progress.OnOperationStarted("Fetching CDN info");
+        var timer = System.Diagnostics.Stopwatch.StartNew();
+
+        try
+        {
+            var allGames = await _epicManager!.GetAvailableGamesAsync();
+
+            // Filter to requested appIds if provided
+            if (appIds != null && appIds.Count > 0)
+            {
+                var requestedSet = new HashSet<string>(appIds, StringComparer.OrdinalIgnoreCase);
+                allGames = allGames.Where(g => requestedSet.Contains(g.AppId)).ToList();
+            }
+
+            var results = new List<CdnInfo>();
+            foreach (var app in allGames)
+            {
+                if (cancellationToken.IsCancellationRequested) break;
+
+                try
+                {
+                    var manifestUrl = await _epicManager.GetManifestDownloadUrlAsync(app);
+                    results.Add(new CdnInfo
+                    {
+                        AppId = app.AppId,
+                        Name = app.Title,
+                        CdnHost = manifestUrl.ManifestDownloadUri.Host,
+                        ChunkBaseUrl = manifestUrl.ChunkBaseUrl
+                    });
+                }
+                catch (Exception ex)
+                {
+                    _progress.OnLog(LogLevel.Warning, $"Failed to get CDN info for {app.Title} ({app.AppId}): {ex.Message}");
+                    // Continue with other games
+                }
+            }
+
+            _progress.OnOperationCompleted("Fetching CDN info", timer.Elapsed);
+            return new CdnInfoResult
+            {
+                Apps = results,
+                Message = $"Retrieved CDN info for {results.Count} of {allGames.Count} games"
+            };
+        }
+        catch (Exception ex)
+        {
+            _progress.OnError("Failed to fetch CDN info", ex);
             throw;
         }
     }
@@ -445,6 +507,7 @@ public class OwnedGame
 {
     public string AppId { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
+    public string? ImageUrl { get; init; }
 }
 
 public class CacheStatusResult
@@ -458,4 +521,18 @@ public class AppCacheStatus
     public string AppId { get; init; } = "";
     public string Name { get; init; } = "";
     public bool IsUpToDate { get; init; }
+}
+
+public class CdnInfo
+{
+    public string AppId { get; init; } = string.Empty;
+    public string Name { get; init; } = string.Empty;
+    public string CdnHost { get; init; } = string.Empty;
+    public string ChunkBaseUrl { get; init; } = string.Empty;
+}
+
+public class CdnInfoResult
+{
+    public List<CdnInfo> Apps { get; init; } = new();
+    public string? Message { get; init; }
 }

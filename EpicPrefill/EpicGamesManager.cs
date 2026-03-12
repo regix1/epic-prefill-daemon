@@ -205,13 +205,15 @@
             var ownedApps = new List<AppInfo>();
             foreach (Asset asset in ownedAssets)
             {
+                var metadata = appMetadata[asset.AppId];
                 var app = new AppInfo
                 {
                     AppId = asset.AppId,
                     BuildVersion = asset.BuildVersion,
                     CatalogItemId = asset.CatalogItemId,
                     Namespace = asset.Namespace,
-                    Title = appMetadata[asset.AppId].Title
+                    Title = metadata.Title,
+                    ImageUrl = metadata.GetBestImageUrl()
                 };
                 ownedApps.Add(app);
             }
@@ -228,6 +230,14 @@
         /// Gets the download size for an app by downloading and parsing its manifest.
         /// Returns 0 if the size cannot be determined.
         /// </summary>
+        /// <summary>
+        /// Gets the manifest download URL for an app, which contains the CDN host and chunk base URL.
+        /// </summary>
+        public async Task<ManifestUrl> GetManifestDownloadUrlAsync(AppInfo app)
+        {
+            return await _epicApi.GetManifestDownloadUrlAsync(app);
+        }
+
         public async Task<long> GetAppDownloadSizeAsync(AppInfo app)
         {
             var manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app);

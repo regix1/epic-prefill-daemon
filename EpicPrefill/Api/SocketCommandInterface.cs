@@ -96,6 +96,7 @@ public sealed class SocketCommandInterface : IDisposable
                 "provide-credential" => HandleProvideCredential(request),
                 "status" => HandleStatus(request),
                 "get-owned-games" => await HandleGetOwnedGamesAsync(request, cancellationToken),
+                "get-cdn-info" => await HandleGetCdnInfoAsync(request, cancellationToken),
                 "get-selected-apps" => HandleGetSelectedApps(request),
                 "set-selected-apps" => HandleSetSelectedApps(request),
                 "get-selected-apps-status" => await HandleGetSelectedAppsStatusAsync(request, cancellationToken),
@@ -302,6 +303,24 @@ public sealed class SocketCommandInterface : IDisposable
         return new CommandResponse
         {
             Id = request.Id, Success = true, Data = games, CompletedAt = DateTime.UtcNow
+        };
+    }
+
+    private async Task<CommandResponse> HandleGetCdnInfoAsync(CommandRequest request, CancellationToken cancellationToken)
+    {
+        EnsureLoggedIn();
+
+        // Optional: filter by specific appIds
+        List<string>? appIds = null;
+        if (request.Parameters?.TryGetValue("appIds", out var appIdsJson) == true)
+        {
+            appIds = JsonSerializer.Deserialize<List<string>>(appIdsJson);
+        }
+
+        var result = await _api!.GetCdnInfoAsync(appIds, cancellationToken);
+        return new CommandResponse
+        {
+            Id = request.Id, Success = true, Data = result, CompletedAt = DateTime.UtcNow
         };
     }
 
