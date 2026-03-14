@@ -12,3 +12,5 @@ lockfile
 EpicPrefill/Properties/PublishProfiles/FolderProfile.pubxml
 /Benchmarks/BenchmarkDotNet.Artifacts/results
 /docs/RenderAnsiToSvg/__pycache__/*.pyc
+.serena/project.yml
+.serena/project.yml

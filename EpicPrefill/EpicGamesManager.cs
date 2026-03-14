@@ -212,8 +212,7 @@
                     BuildVersion = asset.BuildVersion,
                     CatalogItemId = asset.CatalogItemId,
                     Namespace = asset.Namespace,
-                    Title = metadata.Title,
-                    ImageUrl = metadata.GetBestImageUrl()
+                    Title = metadata.Title
                 };
                 ownedApps.Add(app);
             }
