@@ -204,17 +204,32 @@ namespace EpicPrefill.Handlers
                 return new UserAccountManager(ansiConsole, authProvider);
             }
 
-            using var fileStream = File.Open(AppConfig.AccountSettingsStorePath, FileMode.Open, FileAccess.Read);
-
             var accountManager = new UserAccountManager(ansiConsole, authProvider);
-            accountManager.OauthToken = JsonSerializer.Deserialize(fileStream, SerializationContext.Default.OauthToken);
+            var rawContent = File.ReadAllText(AppConfig.AccountSettingsStorePath).Trim();
+
+            if (TokenStorageEncryption.IsEncrypted(rawContent))
+            {
+                // Normal path: decrypt then deserialise
+                var json = TokenStorageEncryption.Decrypt(rawContent);
+                accountManager.OauthToken = JsonSerializer.Deserialize(json, SerializationContext.Default.OauthToken);
+            }
+            else
+            {
+                // Migration path: file is legacy plaintext JSON — load it then immediately re-save encrypted
+                ansiConsole.LogMarkupLine("Migrating account credentials to encrypted storage...");
+                accountManager.OauthToken = JsonSerializer.Deserialize(rawContent, SerializationContext.Default.OauthToken);
+                accountManager.Save();
+            }
+
             return accountManager;
         }
 
         private void Save()
         {
-            using var fileStream = File.Open(AppConfig.AccountSettingsStorePath, FileMode.Create, FileAccess.Write);
-            JsonSerializer.Serialize(fileStream, OauthToken, SerializationContext.Default.OauthToken);
+            var json = JsonSerializer.Serialize(OauthToken, SerializationContext.Default.OauthToken);
+            var encrypted = TokenStorageEncryption.Encrypt(json);
+            File.WriteAllText(AppConfig.AccountSettingsStorePath, encrypted);
+            TokenStorageEncryption.SetRestrictivePermissions(AppConfig.AccountSettingsStorePath);
         }
 
     }
