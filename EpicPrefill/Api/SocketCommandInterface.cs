@@ -424,10 +424,16 @@ public sealed class SocketCommandInterface : IDisposable
             catch (OperationCanceledException)
             {
                 _progress.OnLog(LogLevel.Info, "Prefill cancelled by user");
+                // Emit a terminal socket event so the backend always clears IsPrefilling.
+                // Reuse the existing terminal "error" state; the backend terminal funnel is idempotent.
+                _progress.OnError("Prefill cancelled by user");
             }
             catch (Exception ex)
             {
                 _progress.OnLog(LogLevel.Error, $"Prefill failed: {ex.Message}");
+                // Emit a terminal socket event so the backend always clears IsPrefilling
+                // even when PrefillAsync throws without emitting one itself.
+                _progress.OnError($"Prefill failed: {ex.Message}", ex);
             }
             finally
             {
