@@ -36,9 +36,12 @@ public static class DaemonMode
 
         Console.WriteLine("Daemon started. Waiting for connections...");
 
+        using var lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var lifetimeTimer = StartMaxLifetimeTimer(lifetimeCts);
+
         try
         {
-            await Task.Delay(Timeout.Infinite, cancellationToken);
+            await Task.Delay(Timeout.Infinite, lifetimeCts.Token);
         }
         catch (OperationCanceledException)
         {
@@ -47,6 +50,29 @@ public static class DaemonMode
 
         await socketInterface.StopAsync();
         Console.WriteLine("Daemon stopped.");
+    }
+
+    /// <summary>
+    /// Reads <c>PREFILL_MAX_LIFETIME_SECONDS</c>. When &gt; 0, returns a timer that, on elapse, logs and cancels the
+    /// supplied token source so the long-lived daemon loop exits cleanly (process returns 0 / the container stops).
+    /// Returns null (no-op) when the variable is unset, not an integer, or &lt;= 0.
+    /// </summary>
+    private static Timer? StartMaxLifetimeTimer(CancellationTokenSource lifetimeCts)
+    {
+        var raw = Environment.GetEnvironmentVariable("PREFILL_MAX_LIFETIME_SECONDS");
+        if (!int.TryParse(raw, out var seconds) || seconds <= 0)
+        {
+            return null;
+        }
+
+        Console.WriteLine($"PREFILL_MAX_LIFETIME_SECONDS={seconds}: daemon will self-shut down after {seconds}s.");
+
+        return new Timer(_ =>
+        {
+            Console.WriteLine($"Max lifetime of {seconds}s reached. Initiating clean shutdown...");
+            try { lifetimeCts.Cancel(); }
+            catch (ObjectDisposedException) { /* shutting down already */ }
+        }, null, TimeSpan.FromSeconds(seconds), Timeout.InfiniteTimeSpan);
     }
 
     public static async Task RunTcpAsync(
@@ -77,9 +103,12 @@ public static class DaemonMode
 
         Console.WriteLine("Daemon started. Waiting for connections...");
 
+        using var lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+        using var lifetimeTimer = StartMaxLifetimeTimer(lifetimeCts);
+
         try
         {
-            await Task.Delay(Timeout.Infinite, cancellationToken);
+            await Task.Delay(Timeout.Infinite, lifetimeCts.Token);
         }
         catch (OperationCanceledException)
         {

@@ -28,7 +28,8 @@ public sealed class SocketCommandInterface : IDisposable
         "login",
         "status",
         "cancel-login",
-        "provide-credential"
+        "provide-credential",
+        "provide-auto-login"
     };
 
     public SocketCommandInterface(string socketPath)
@@ -90,6 +91,7 @@ public sealed class SocketCommandInterface : IDisposable
             return request.Type.ToLowerInvariant() switch
             {
                 "login" => await HandleLoginAsync(request, cancellationToken),
+                "provide-auto-login" => HandleProvideAutoLogin(request),
                 "logout" => HandleLogout(request),
                 "cancel-login" => await HandleCancelLoginAsync(request),
                 "cancel-prefill" => HandleCancelPrefill(request),
@@ -194,6 +196,85 @@ public sealed class SocketCommandInterface : IDisposable
         });
     }
 
+    /// <summary>
+    /// Non-interactive (headless) login. Mirrors the Steam daemon's 'provide-auto-login': requests an encrypted
+    /// refresh token from the client over the SAME secure channel used by interactive 'provide-credential',
+    /// performs the OAuth refresh grant, and persists the resulting full token to Config/userAccount.json.
+    /// A subsequent (and here, automatic) login then reuses the persisted session without user interaction.
+    /// </summary>
+    private CommandResponse HandleProvideAutoLogin(CommandRequest request)
+    {
+        if (_isLoggedIn)
+        {
+            return new CommandResponse
+            {
+                Id = request.Id, Success = true, Message = "Already logged in", CompletedAt = DateTime.UtcNow
+            };
+        }
+
+        if (_isLoggingIn)
+        {
+            return new CommandResponse
+            {
+                Id = request.Id, Success = true, Message = "Login already in progress", CompletedAt = DateTime.UtcNow
+            };
+        }
+
+        _progress.OnLog(LogLevel.Info, "Starting headless (auto) login via socket...");
+        _isLoggingIn = true;
+
+        _loginCts?.Dispose();
+        _loginCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
+
+        _api = new EpicPrefillApi(_authProvider, _progress);
+
+        _loginTask = Task.Run(async () =>
+        {
+            try
+            {
+                // Reuse the existing encrypted credential channel to receive the refresh token.
+                var refreshToken = await _authProvider.GetRefreshTokenAsync(_loginCts.Token);
+
+                // Exchange the refresh token for a full token and persist it (encrypted) to disk.
+                var accountManager = Handlers.UserAccountManager.LoadFromFile(new ApiConsoleAdapter(_authProvider, _progress), _authProvider);
+                await accountManager.ImportRefreshTokenAsync(refreshToken, _loginCts.Token);
+
+                // With a valid persisted session, a normal login completes without further interaction.
+                await _api.InitializeAsync(_loginCts.Token);
+
+                _isLoggedIn = true;
+                _isLoggingIn = false;
+                _progress.OnLog(LogLevel.Info, "Headless login successful - commands now available");
+
+                await BroadcastStatusAsync("logged-in", "Authenticated and ready for commands", _api.DisplayName);
+            }
+            catch (OperationCanceledException)
+            {
+                _progress.OnLog(LogLevel.Info, "Headless login cancelled");
+                _isLoggingIn = false;
+                CleanupApiInstance();
+                await BroadcastStatusAsync("awaiting-login", "Login cancelled - ready for new attempt");
+            }
+            catch (Exception ex)
+            {
+                _progress.OnLog(LogLevel.Error, $"Headless login failed: {ex.Message}");
+                _isLoggingIn = false;
+                CleanupApiInstance();
+                await BroadcastStatusAsync("awaiting-login", $"Login failed: {ex.Message}");
+            }
+            finally
+            {
+                _loginCts?.Dispose();
+                _loginCts = null;
+            }
+        }, _loginCts.Token);
+
+        return new CommandResponse
+        {
+            Id = request.Id, Success = true, Message = "Headless login started - awaiting refresh token", CompletedAt = DateTime.UtcNow
+        };
+    }
+
     private CommandResponse HandleLogout(CommandRequest request)
     {
         CleanupApiInstance();
@@ -282,6 +363,9 @@ public sealed class SocketCommandInterface : IDisposable
 
     private CommandResponse HandleStatus(CommandRequest request)
     {
+        // Read the persisted token (read-only) so expiry/account info is available even before/without an active login.
+        var storedToken = Handlers.UserAccountManager.TryReadStoredToken();
+
         return new CommandResponse
         {
             Id = request.Id,
@@ -289,10 +373,23 @@ public sealed class SocketCommandInterface : IDisposable
             Data = new StatusData
             {
                 IsLoggedIn = _isLoggedIn,
-                IsInitialized = _api?.IsInitialized ?? false
+                IsInitialized = _api?.IsInitialized ?? false,
+                AuthExpiryUtc = ToUtcIso(storedToken?.RefreshTokenExpiresAt),
+                AccessExpiryUtc = ToUtcIso(storedToken?.ExpiresAt),
+                AccountDisplayName = storedToken?.DisplayName
             },
             CompletedAt = DateTime.UtcNow
         };
+    }
+
+    private static string? ToUtcIso(DateTime? value)
+    {
+        if (value == null || value.Value == default)
+        {
+            return null;
+        }
+
+        return value.Value.ToUniversalTime().ToString("o", System.Globalization.CultureInfo.InvariantCulture);
     }
 
     private async Task<CommandResponse> HandleGetOwnedGamesAsync(CommandRequest request, CancellationToken cancellationToken)

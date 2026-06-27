@@ -50,18 +50,31 @@ public sealed class SocketAuthProvider : IEpicAuthProvider, IDisposable
     /// <summary>
     /// Sends the Epic OAuth URL via socket credential-challenge and waits for the encrypted auth code.
     /// </summary>
-    public async Task<string> GetAuthorizationCodeAsync(string authUrl, CancellationToken cancellationToken = default)
+    public Task<string> GetAuthorizationCodeAsync(string authUrl, CancellationToken cancellationToken = default)
+        => ExchangeCredentialAsync("authorization-url", authUrl, cancellationToken);
+
+    /// <summary>
+    /// Headless login support: requests an encrypted refresh token from the client over the SAME secure
+    /// credential channel used by interactive login (provide-credential), and returns the decrypted refresh token.
+    /// </summary>
+    public Task<string> GetRefreshTokenAsync(CancellationToken cancellationToken = default)
+        => ExchangeCredentialAsync("refresh-token", authUrl: null, cancellationToken);
+
+    /// <summary>
+    /// Shared secure-exchange routine: broadcasts a credential challenge of the given type, then waits for the
+    /// client to return the encrypted credential (via provide-credential) and decrypts it.
+    /// </summary>
+    private async Task<string> ExchangeCredentialAsync(string credentialType, string? authUrl, CancellationToken cancellationToken)
     {
         await _credentialLock.WaitAsync(cancellationToken);
         try
         {
             _pendingCredential = new TaskCompletionSource<EncryptedCredentialResponse>();
 
-            // Create secure challenge with "authorization-url" type containing the OAuth URL
-            var challenge = SecureCredentialExchange.CreateChallenge("authorization-url", authUrl);
+            var challenge = SecureCredentialExchange.CreateChallenge(credentialType, authUrl);
             _currentChallengeId = challenge.ChallengeId;
 
-            _progress.OnLog(LogLevel.Info, $"Sending credential challenge via socket: authorization-url (id: {challenge.ChallengeId})");
+            _progress.OnLog(LogLevel.Info, $"Sending credential challenge via socket: {credentialType} (id: {challenge.ChallengeId})");
 
             // Send challenge event to all connected clients
             var challengeEvent = new CredentialChallengeEvent(challenge);
@@ -82,7 +95,7 @@ public sealed class SocketAuthProvider : IEpicAuthProvider, IDisposable
                     throw new InvalidOperationException("Failed to decrypt credential - invalid or expired challenge");
                 }
 
-                _progress.OnLog(LogLevel.Debug, "Authorization code decrypted successfully");
+                _progress.OnLog(LogLevel.Debug, $"Credential ({credentialType}) decrypted successfully");
 
                 StoreSecurely(credential);
 
@@ -90,7 +103,7 @@ public sealed class SocketAuthProvider : IEpicAuthProvider, IDisposable
             }
             catch (OperationCanceledException) when (timeoutCts.IsCancellationRequested)
             {
-                throw new TimeoutException("Timeout waiting for authorization code");
+                throw new TimeoutException("Timeout waiting for credential");
             }
         }
         finally

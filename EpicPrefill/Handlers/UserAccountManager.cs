@@ -232,5 +232,76 @@ namespace EpicPrefill.Handlers
             TokenStorageEncryption.SetRestrictivePermissions(AppConfig.AccountSettingsStorePath);
         }
 
+        /// <summary>
+        /// Reads the persisted <see cref="OauthToken"/> from <see cref="AppConfig.AccountSettingsStorePath"/> without
+        /// requiring an auth provider or triggering a login. Returns null when no token is stored or it cannot be read.
+        /// Intended for read-only status reporting (e.g. the daemon 'status' command).
+        /// </summary>
+        public static OauthToken TryReadStoredToken()
+        {
+            try
+            {
+                if (!File.Exists(AppConfig.AccountSettingsStorePath))
+                {
+                    return null;
+                }
+
+                var rawContent = File.ReadAllText(AppConfig.AccountSettingsStorePath).Trim();
+                var json = TokenStorageEncryption.IsEncrypted(rawContent)
+                    ? TokenStorageEncryption.Decrypt(rawContent)
+                    : rawContent;
+
+                return JsonSerializer.Deserialize(json, SerializationContext.Default.OauthToken);
+            }
+            catch
+            {
+                return null;
+            }
+        }
+
+        /// <summary>
+        /// Headless login: exchanges the supplied refresh token for a full <see cref="OauthToken"/> via the OAuth
+        /// refresh_token grant and persists it encrypted to disk. Mirrors the interactive flow but skips the
+        /// authorization-code step, enabling non-interactive (container) login.
+        /// </summary>
+        public async Task ImportRefreshTokenAsync(string refreshToken, CancellationToken cancellationToken = default)
+        {
+            if (string.IsNullOrWhiteSpace(refreshToken))
+            {
+                throw new EpicLoginException("A non-empty refresh token is required for headless login.");
+            }
+
+            var requestParams = new Dictionary<string, string>
+            {
+                { "token_type", "eg1" },
+                { "grant_type", "refresh_token" },
+                { "refresh_token", refreshToken }
+            };
+
+            var authUri = new Uri($"https://{OauthHost}/account/api/oauth/token");
+            using var request = new HttpRequestMessage(HttpMethod.Post, authUri);
+            request.Headers.Authorization = BasicAuthentication.ToAuthenticationHeader(BasicUsername, BasicPassword);
+            request.Content = new FormUrlEncodedContent(requestParams);
+
+            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+
+            if (!response.IsSuccessStatusCode)
+            {
+                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                CheckForCorrectiveAction(errorBody);
+                throw new EpicLoginException("Headless login failed - the supplied refresh token was rejected by Epic.");
+            }
+
+            using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+            OauthToken = await JsonSerializer.DeserializeAsync(responseStream, SerializationContext.Default.OauthToken, cancellationToken);
+
+            if (OauthToken == null)
+            {
+                throw new EpicLoginException("Headless login failed - Epic returned an empty token response.");
+            }
+
+            Save();
+        }
+
     }
 }
