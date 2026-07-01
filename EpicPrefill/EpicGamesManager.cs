@@ -40,18 +40,19 @@
             await _userAccountManager.LoginAsync();
         }
 
-        public async Task DownloadMultipleAppsAsync(bool downloadAllOwnedGames, bool force = false, List<string> manualIds = null, CancellationToken cancellationToken = default)
+        public async Task DownloadMultipleAppsAsync(PrefillAppOrder order, bool force = false, List<string> manualIds = null, CancellationToken cancellationToken = default)
         {
             var allOwnedGames = await GetAvailableGamesAsync();
 
-            var appIdsToDownload = LoadPreviouslySelectedApps();
-            if (manualIds != null)
+            List<string> appIdsToDownload;
+            if (manualIds != null && manualIds.Count > 0)
             {
-                appIdsToDownload.AddRange(manualIds);
+                // An explicit id list always wins over the preset ordering.
+                appIdsToDownload = new List<string>(manualIds);
             }
-            if (downloadAllOwnedGames)
+            else
             {
-                appIdsToDownload = allOwnedGames.Select(e => e.AppId).ToList();
+                appIdsToDownload = await ResolveAppIdsForOrderAsync(order, allOwnedGames, cancellationToken);
             }
 
             // Whitespace divider
@@ -115,6 +116,77 @@
                 TotalBytesTransferred = (long)_prefillSummaryResult.TotalBytesTransferred.Bytes,
                 TotalTime = _prefillSummaryResult.PrefillElapsedTime.Elapsed
             });
+        }
+
+        /// <summary>
+        /// Resolves the ordered list of app ids to prefill for the requested preset. Every branch is
+        /// designed to degrade gracefully to a full owned-games prefill rather than prefilling nothing.
+        /// </summary>
+        private async Task<List<string>> ResolveAppIdsForOrderAsync(PrefillAppOrder order, List<AppInfo> allOwnedGames, CancellationToken cancellationToken)
+        {
+            switch (order)
+            {
+                case PrefillAppOrder.AllOwned:
+                    return allOwnedGames.Select(e => e.AppId).ToList();
+
+                case PrefillAppOrder.Top:
+                    return await ResolveMostPlayedAppIdsAsync(allOwnedGames, cancellationToken);
+
+                case PrefillAppOrder.Recent:
+                    // Epic's public API returns only cumulative playtime, never a per-title last-played
+                    // timestamp, so a real recently-played ordering cannot be produced. Fall back to a full
+                    // prefill and say why, instead of shipping a misleading "recent" ordering.
+                    _progress.OnLog(LogLevel.Warning,
+                        "Epic does not expose a recently-played signal (its API returns only cumulative playtime), " +
+                        "so the Recent preset prefills all owned games instead.");
+                    return allOwnedGames.Select(e => e.AppId).ToList();
+
+                case PrefillAppOrder.Selected:
+                default:
+                    return LoadPreviouslySelectedApps();
+            }
+        }
+
+        /// <summary>
+        /// Orders owned games by cumulative Epic playtime, most-played first. Falls back to a full
+        /// owned-games prefill (with a clear log line) whenever the playtime data is unavailable,
+        /// empty, or cannot be loaded, so the Top preset never silently prefills nothing.
+        /// </summary>
+        private async Task<List<string>> ResolveMostPlayedAppIdsAsync(List<AppInfo> allOwnedGames, CancellationToken cancellationToken)
+        {
+            try
+            {
+                var accountId = _userAccountManager.OauthToken?.AccountId;
+                if (string.IsNullOrEmpty(accountId))
+                {
+                    _progress.OnLog(LogLevel.Warning, "Top preset: no Epic account id is available, prefilling all owned games instead.");
+                    return allOwnedGames.Select(e => e.AppId).ToList();
+                }
+
+                var playtimes = await _epicApi.GetPlaytimeAsync(accountId, cancellationToken);
+                var mostPlayed = PlaytimeOrdering.OrderOwnedGamesByMostPlayed(allOwnedGames, playtimes);
+
+                if (mostPlayed.Count == 0)
+                {
+                    _progress.OnLog(LogLevel.Warning, "Top preset: Epic reported no playtime for any owned game, prefilling all owned games instead.");
+                    return allOwnedGames.Select(e => e.AppId).ToList();
+                }
+
+                _progress.OnLog(LogLevel.Info, $"Top preset: prefilling {mostPlayed.Count} owned games ordered by total playtime (most played first).");
+                return mostPlayed;
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                // Only a genuine user cancellation (token signalled) propagates. An HttpClient timeout also
+                // throws OperationCanceledException but with the token unsignalled; that falls through to the
+                // general handler below and degrades to a full owned-games prefill instead of aborting the run.
+                throw;
+            }
+            catch (Exception e)
+            {
+                _progress.OnLog(LogLevel.Error, $"Top preset: could not load Epic playtime ({e.Message}); prefilling all owned games instead.");
+                return allOwnedGames.Select(e => e.AppId).ToList();
+            }
         }
 
         private async Task DownloadSingleAppAsync(AppInfo app, bool force = false, CancellationToken cancellationToken = default)

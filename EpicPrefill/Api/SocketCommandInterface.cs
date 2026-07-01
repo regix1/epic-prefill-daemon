@@ -499,6 +499,10 @@ public sealed class SocketCommandInterface : IDisposable
         {
             if (bool.TryParse(request.Parameters.GetValueOrDefault("all"), out var all))
                 options.DownloadAllOwnedGames = all;
+            if (bool.TryParse(request.Parameters.GetValueOrDefault("recent"), out var recent))
+                options.Recent = recent;
+            if (bool.TryParse(request.Parameters.GetValueOrDefault("top"), out var top))
+                options.Top = top;
             if (bool.TryParse(request.Parameters.GetValueOrDefault("force"), out var force))
                 options.Force = force;
         }

@@ -346,7 +346,7 @@ public sealed class EpicPrefillApi : IDisposable
         try
         {
             await _epicManager!.DownloadMultipleAppsAsync(
-                downloadAllOwnedGames: options.DownloadAllOwnedGames,
+                order: ResolvePrefillOrder(options),
                 force: options.Force,
                 cancellationToken: cancellationToken);
 
@@ -378,6 +378,19 @@ public sealed class EpicPrefillApi : IDisposable
                 TotalTime = timer.Elapsed
             };
         }
+    }
+
+    // Maps the wire-level preset booleans onto a single strongly-typed ordering. Presets are mutually
+    // exclusive in the UI; if more than one arrives, the most specific one wins.
+    private static PrefillAppOrder ResolvePrefillOrder(PrefillOptions options)
+    {
+        if (options.Top)
+            return PrefillAppOrder.Top;
+        if (options.Recent)
+            return PrefillAppOrder.Recent;
+        if (options.DownloadAllOwnedGames)
+            return PrefillAppOrder.AllOwned;
+        return PrefillAppOrder.Selected;
     }
 
     private static (int FileCount, long TotalBytes)? GetCacheStats()
@@ -470,6 +483,12 @@ public class PrefillOptions
 {
     public bool DownloadAllOwnedGames { get; set; }
     public bool Force { get; set; }
+
+    /// <summary>The "Recent" preset. Epic has no recently-played API, so this gracefully falls back to all owned games.</summary>
+    public bool Recent { get; set; }
+
+    /// <summary>The "Top" preset: owned games ordered by cumulative Epic playtime, most-played first.</summary>
+    public bool Top { get; set; }
 }
 
 public class PrefillResult

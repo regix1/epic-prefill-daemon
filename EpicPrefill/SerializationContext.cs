@@ -4,6 +4,7 @@
     [JsonSerializable(typeof(ManifestResponse))]
     [JsonSerializable(typeof(OauthToken))]
     [JsonSerializable(typeof(List<Asset>))]
+    [JsonSerializable(typeof(List<PlaytimeEntry>))]
     [JsonSerializable(typeof(List<string>))]
     [JsonSerializable(typeof(Dictionary<string, AppMetadataResponse>))]
     [JsonSerializable(typeof(JsonManifest))]

@@ -12,6 +12,7 @@
 
         private const string LauncherHost = "https://launcher-public-service-prod06.ol.epicgames.com";
         private const string CatalogHost = "https://catalog-public-service-prod06.ol.epicgames.com";
+        private const string LibraryHost = "https://library-service.live.use1a.on.epicgames.com";
 
         private string MetadataCachePath => Path.Combine(AppConfig.TempDir, "metadataCache.json");
 
@@ -58,6 +59,38 @@
 
             _ansiConsole.LogMarkupLine($"Retrieved {Magenta(filteredApps.Count)} owned apps", timer);
             return filteredApps;
+        }
+
+        /// <summary>
+        /// Retrieves cumulative playtime per owned artifact for the given account from Epic's library-service.
+        /// Uses the same launcher OAuth token the daemon already holds (the endpoint requires the
+        /// 'library:public:{accountId}:playtime:all READ' scope, which that token carries).
+        ///
+        /// Epic returns only a total-seconds figure per title, with no last-played timestamp, so this data
+        /// backs a "most played" ordering (the Top preset) and cannot back a genuine "recently played" one.
+        /// </summary>
+        internal async Task<List<PlaytimeEntry>> GetPlaytimeAsync(string accountId, CancellationToken cancellationToken = default)
+        {
+            _ansiConsole.LogMarkupLine("Retrieving Epic playtime data");
+            var timer = Stopwatch.StartNew();
+
+            var requestUri = new Uri($"{LibraryHost}/library/api/public/playtime/account/{accountId}/all");
+            using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
+
+            using var httpClient = await _httpClientFactory.GetHttpClientAsync();
+            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            response.EnsureSuccessStatusCode();
+
+            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            var playtimes = JsonSerializer.Deserialize(responseContent, SerializationContext.Default.ListPlaytimeEntry);
+
+            if (AppConfig.DebugLogs)
+            {
+                await File.WriteAllTextAsync($@"{AppConfig.DebugOutputDir}\playtimeResponse.json", responseContent, cancellationToken);
+            }
+
+            _ansiConsole.LogMarkupLine($"Retrieved playtime for {Magenta(playtimes?.Count ?? 0)} titles", timer);
+            return playtimes ?? new List<PlaytimeEntry>();
         }
 
         /// <summary>
