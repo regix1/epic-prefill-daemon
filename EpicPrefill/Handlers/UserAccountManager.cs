@@ -210,7 +210,27 @@ namespace EpicPrefill.Handlers
             if (TokenStorageEncryption.IsEncrypted(rawContent))
             {
                 // Normal path: decrypt then deserialise
-                var json = TokenStorageEncryption.Decrypt(rawContent);
+                string json;
+                try
+                {
+                    json = TokenStorageEncryption.Decrypt(rawContent);
+                }
+                catch (CryptographicException)
+                {
+                    // Store was encrypted under a key this container cannot reproduce
+                    // (pre-key-file build, or lost key file). Discard and start fresh -
+                    // the user must log in again once; afterwards the key travels with the volume.
+                    ansiConsole.LogMarkupLine(LightYellow("Stored credentials could not be decrypted; discarded stale token store, please log in again."));
+                    try
+                    {
+                        File.Delete(AppConfig.AccountSettingsStorePath);
+                    }
+                    catch (Exception)
+                    {
+                        // Deletion is best-effort; a fresh Save() overwrites it anyway.
+                    }
+                    return new UserAccountManager(ansiConsole, authProvider);
+                }
                 accountManager.OauthToken = JsonSerializer.Deserialize(json, SerializationContext.Default.OauthToken);
             }
             else
@@ -253,8 +273,33 @@ namespace EpicPrefill.Handlers
 
                 return JsonSerializer.Deserialize(json, SerializationContext.Default.OauthToken);
             }
-            catch
+            catch (CryptographicException)
             {
+                // Store was encrypted under a key this container cannot reproduce. Discard the
+                // stale file so a subsequent LoadFromFile() self-heals instead of failing again.
+                try
+                {
+                    File.Delete(AppConfig.AccountSettingsStorePath);
+                }
+                catch (Exception)
+                {
+                    // Deletion is best-effort.
+                }
+                return null;
+            }
+            catch (JsonException)
+            {
+                // Decrypted (or plaintext) content is not valid/current-schema JSON - e.g. a corrupt
+                // write or a store from an older schema version. Discard the stale file so a
+                // subsequent LoadFromFile() self-heals instead of failing again.
+                try
+                {
+                    File.Delete(AppConfig.AccountSettingsStorePath);
+                }
+                catch (Exception)
+                {
+                    // Deletion is best-effort.
+                }
                 return null;
             }
         }
