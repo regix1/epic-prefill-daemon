@@ -129,6 +129,29 @@ namespace EpicPrefill.Test
             Assert.False(File.Exists(_accountPath));
         }
 
+        /// <summary>
+        /// SocketCommandInterface has no test seam (it owns a live SocketServer/EpicPrefillApi and can't
+        /// be constructed headlessly), so this covers the underlying guarantee HandleLogoutAsync relies on:
+        /// deleting the account file makes TryReadStoredToken() report no stored account - i.e. "logout"
+        /// really forgets the account rather than just tearing down the live API instance.
+        /// </summary>
+        [Fact]
+        public void DeletingAccountFile_ThenTryReadStoredToken_ReturnsNull()
+        {
+            var encrypted = TokenStorageEncryption.Encrypt(
+                "{\"access_token\":\"abc\",\"refresh_token\":\"def\",\"expires_at\":\"2099-01-01T00:00:00\",\"refresh_expires_at\":\"2099-01-01T00:00:00\"}");
+            File.WriteAllText(_accountPath, encrypted);
+            Assert.NotNull(UserAccountManager.TryReadStoredToken());
+
+            // This is exactly what HandleLogoutAsync does on logout: best-effort delete the persisted store.
+            File.Delete(_accountPath);
+
+            var token = UserAccountManager.TryReadStoredToken();
+
+            Assert.Null(token);
+            Assert.False(File.Exists(_accountPath));
+        }
+
         private sealed class TestEpicAuthProvider : IEpicAuthProvider
         {
             public Task<string> GetAuthorizationCodeAsync(string authUrl, CancellationToken cancellationToken = default) =>
