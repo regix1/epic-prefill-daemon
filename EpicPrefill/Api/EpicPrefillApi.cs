@@ -454,6 +454,10 @@ public sealed class EpicPrefillApi : IDisposable
 
     public void Shutdown()
     {
+        // Unconditional (not gated on _isInitialized): _epicManager is constructed synchronously
+        // before the OAuth exchange completes, so a logout racing a mid-login task must still be
+        // able to drop the in-memory OAuth token even though _isInitialized never flipped true.
+        _epicManager?.ClearOAuthToken();
         _isInitialized = false;
         _progress.OnLog(LogLevel.Info, "Disconnected from Epic Games");
     }

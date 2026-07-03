@@ -35,6 +35,13 @@
 
         public string? DisplayName => _userAccountManager.OauthToken?.DisplayName;
 
+        /// <summary>
+        /// Drops the in-memory OAuth token so it cannot outlive a logout. The persisted store file
+        /// is deleted separately by the daemon's logout handler; this clears the copy already held
+        /// by this manager instance so a mid-login orphan can't keep serving it either.
+        /// </summary>
+        public void ClearOAuthToken() => _userAccountManager.OauthToken = null;
+
         public async Task InitializeAsync()
         {
             await _userAccountManager.LoginAsync();

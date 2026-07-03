@@ -13,6 +13,7 @@ namespace EpicPrefill.Test
     /// real <see cref="AppConfig.ConfigDir"/> (a static readonly path under the test base dir),
     /// so each test saves/restores the "storage.key" and account file it touches.
     /// </summary>
+    [Collection("EpicAccountFile")]
     public sealed class TokenStorageEncryptionTests : IDisposable
     {
         private readonly string _keyPath = Path.Combine(AppConfig.ConfigDir, "storage.key");
