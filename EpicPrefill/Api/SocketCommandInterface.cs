@@ -371,19 +371,12 @@ public sealed class SocketCommandInterface : IDisposable
 
         CleanupApiInstance();
 
-        // Wipe the persisted account file so the refresh token does not linger on disk after logout.
-        try
-        {
-            if (File.Exists(AppConfig.AccountSettingsStorePath))
-            {
-                File.Delete(AppConfig.AccountSettingsStorePath);
-                _progress.OnLog(LogLevel.Info, "Account credentials removed from disk");
-            }
-        }
-        catch (Exception ex)
-        {
-            _progress.OnLog(LogLevel.Warning, $"Could not remove account credentials from disk: {ex.Message}");
-        }
+        // Wipe the persisted account file AND its storage.key so the refresh token cannot linger
+        // (or be silently re-decrypted by a later login re-using the same key) after logout.
+        // Session 20260703-221336-2070027597 (RC6): logout previously deleted only the account
+        // file, leaving storage.key on disk - any subsequent login re-persisted a token the SAME
+        // key could still decrypt, making the erase-on-stop/clear-logins policy incomplete.
+        EraseAccountStore(_progress);
 
         _progress.OnLog(LogLevel.Info, "Logged out");
 
@@ -465,7 +458,20 @@ public sealed class SocketCommandInterface : IDisposable
             Tag = tag
         };
 
-        _authProvider.ReceiveCredential(response);
+        var accepted = _authProvider.ReceiveCredential(response);
+        if (!accepted)
+        {
+            // RC4 (session 20260703-221336-2070027597): don't mask a dropped credential as
+            // success - no pending challenge or a challenge-id mismatch means the manager's
+            // session-scoping desynced from the daemon and this credential landed nowhere.
+            return new CommandResponse
+            {
+                Id = request.Id,
+                Success = false,
+                Error = "No matching login challenge is pending for this credential",
+                CompletedAt = DateTime.UtcNow
+            };
+        }
 
         return new CommandResponse
         {
@@ -750,6 +756,11 @@ public sealed class SocketCommandInterface : IDisposable
     /// <summary>
     /// Tears down an api instance that lost the generation race (superseded by a logout) without
     /// touching any of the shared fields, since a newer login/logout cycle may already own them.
+    /// Also erases the account store: session 20260703-221336-2070027597 (RC6) confirmed that
+    /// <see cref="Handlers.UserAccountManager.LoginAsync"/>/<c>ImportRefreshTokenAsync</c> call
+    /// Save() BEFORE this generation check runs, so an orphaned login that raced past a logout can
+    /// still persist a fresh token to disk. Erasing here closes that resurrection window; the erase
+    /// is idempotent (both files may already be gone from the logout that superseded this task).
     /// </summary>
     private static void DisposeOrphanedApi(EpicPrefillApi api)
     {
@@ -759,6 +770,35 @@ public sealed class SocketCommandInterface : IDisposable
             api.Dispose();
         }
         catch { /* ignore cleanup errors for a discarded orphan */ }
+
+        EraseAccountStore();
+    }
+
+    /// <summary>
+    /// Deletes the persisted account file and its storage.key. Shared by <see cref="HandleLogoutAsync"/>
+    /// (explicit logout) and <see cref="DisposeOrphanedApi"/> (superseded-login resurrection guard) -
+    /// session 20260703-221336-2070027597 (RC6). Best-effort: both files may already be absent.
+    /// </summary>
+    private static void EraseAccountStore(IPrefillProgress? progress = null)
+    {
+        TryDeleteAccountStoreFile(AppConfig.AccountSettingsStorePath, "Account credentials", progress);
+        TryDeleteAccountStoreFile(Path.Combine(AppConfig.ConfigDir, "storage.key"), "Storage key", progress);
+    }
+
+    private static void TryDeleteAccountStoreFile(string path, string label, IPrefillProgress? progress)
+    {
+        try
+        {
+            if (File.Exists(path))
+            {
+                File.Delete(path);
+                progress?.OnLog(LogLevel.Info, $"{label} removed from disk");
+            }
+        }
+        catch (Exception ex)
+        {
+            progress?.OnLog(LogLevel.Warning, $"Could not remove {label.ToLowerInvariant()} from disk: {ex.Message}");
+        }
     }
 
     private async Task BroadcastStatusAsync(string status, string message, string? displayName = null)

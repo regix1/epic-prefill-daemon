@@ -28,23 +28,26 @@ public sealed class SocketAuthProvider : IEpicAuthProvider, IDisposable
 
     /// <summary>
     /// Called by the SocketCommandInterface when a provide-credential command is received.
+    /// Returns false when the credential was dropped (no pending challenge, or it doesn't match the
+    /// live one) so the caller can surface a real failure instead of a false "Credential received"
+    /// success (session 20260703-221336-2070027597, RC4 parity with steam).
     /// </summary>
-    public void ReceiveCredential(EncryptedCredentialResponse response)
+    public bool ReceiveCredential(EncryptedCredentialResponse response)
     {
         if (_pendingCredential == null || _currentChallengeId == null)
         {
             _progress.OnLog(LogLevel.Warning, "Received credential but no challenge is pending");
-            return;
+            return false;
         }
 
         if (response.ChallengeId != _currentChallengeId)
         {
             _progress.OnLog(LogLevel.Warning, $"Received credential for wrong challenge. Expected: {_currentChallengeId}, Got: {response.ChallengeId}");
-            return;
+            return false;
         }
 
         _progress.OnLog(LogLevel.Debug, "Credential received via socket");
-        _pendingCredential.TrySetResult(response);
+        return _pendingCredential.TrySetResult(response);
     }
 
     /// <summary>
