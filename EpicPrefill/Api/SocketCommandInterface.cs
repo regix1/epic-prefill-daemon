@@ -38,6 +38,7 @@ public sealed class SocketCommandInterface : IDisposable
     private static readonly HashSet<string> PreLoginCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "login",
+        "logout",
         "status",
         "cancel-login",
         "provide-credential",
