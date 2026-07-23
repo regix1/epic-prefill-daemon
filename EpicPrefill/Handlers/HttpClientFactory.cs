@@ -5,6 +5,7 @@
     {
         private readonly IAnsiConsole _ansiConsole;
         private readonly UserAccountManager _userAccountManager;
+        private readonly HttpMessageHandler? _handler;
 
         public HttpClientFactory(IAnsiConsole ansiConsole, UserAccountManager userAccountManager)
         {
@@ -12,18 +13,27 @@
             _userAccountManager = userAccountManager;
         }
 
+        internal HttpClientFactory(
+            IAnsiConsole ansiConsole,
+            UserAccountManager userAccountManager,
+            HttpMessageHandler handler)
+            : this(ansiConsole, userAccountManager)
+        {
+            _handler = handler;
+        }
+
         //TODO document
-        public async Task<HttpClient> GetHttpClientAsync()
+        public async Task<HttpClient> GetHttpClientAsync(CancellationToken cancellationToken = default)
         {
             if (_userAccountManager.OauthTokenIsExpired())
             {
-                await _userAccountManager.LoginAsync();
+                await _userAccountManager.LoginAsync(cancellationToken);
             }
 
-            var client = new HttpClient
-            {
-                Timeout = AppConfig.DefaultRequestTimeout
-            };
+            var client = _handler == null
+                ? new HttpClient()
+                : new HttpClient(_handler, disposeHandler: false);
+            client.Timeout = AppConfig.DefaultRequestTimeout;
             client.DefaultRequestHeaders.Add("Authorization", $"bearer {_userAccountManager.OauthToken.AccessToken}");
             client.DefaultRequestHeaders.Add("User-Agent", AppConfig.DefaultUserAgent);
             return client;

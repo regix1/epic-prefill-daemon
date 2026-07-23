@@ -3,6 +3,7 @@
 using System.Collections.Concurrent;
 using System.Net;
 using System.Net.Sockets;
+using System.Security.Cryptography;
 using System.Text;
 using System.Text.Json;
 
@@ -31,10 +32,12 @@ public sealed class SocketServer : IAsyncDisposable
     private readonly CancellationTokenSource _cts = new();
     private Socket? _listener;
     private readonly ConcurrentDictionary<string, ConnectedClient> _clients = new();
+    private readonly DaemonCommandDispatcher _dispatcher;
     private Task? _acceptTask;
     private bool _disposed;
 
     public Func<CommandRequest, CancellationToken, Task<CommandResponse>>? OnCommand { get; set; }
+    public Func<CommandRequest, DaemonCommandLane>? CommandLaneSelector { get; set; }
 
     public SocketServer(string socketPath, IPrefillProgress? progress = null)
     {
@@ -43,6 +46,8 @@ public sealed class SocketServer : IAsyncDisposable
         _tcpPort = 0;
         _tcpBindAddress = IPAddress.Any;
         _progress = progress ?? NullProgress.Instance;
+        _dispatcher = new DaemonCommandDispatcher(
+            exceptionObserver: ex => _progress.OnLog(LogLevel.Error, $"Command handler failed: {ex.Message}"));
 
         _sharedSecret = Environment.GetEnvironmentVariable("PREFILL_SOCKET_SECRET");
         if (!string.IsNullOrEmpty(_sharedSecret))
@@ -58,6 +63,8 @@ public sealed class SocketServer : IAsyncDisposable
         _tcpPort = tcpPort;
         _tcpBindAddress = bindAddress ?? IPAddress.Any;
         _progress = progress ?? NullProgress.Instance;
+        _dispatcher = new DaemonCommandDispatcher(
+            exceptionObserver: ex => _progress.OnLog(LogLevel.Error, $"Command handler failed: {ex.Message}"));
 
         _sharedSecret = Environment.GetEnvironmentVariable("PREFILL_SOCKET_SECRET");
         if (!string.IsNullOrEmpty(_sharedSecret))
@@ -149,9 +156,11 @@ public sealed class SocketServer : IAsyncDisposable
     {
         using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, client.CancellationToken);
         var token = linkedCts.Token;
+        DaemonCommandClient? commandClient = null;
 
         try
         {
+            commandClient = _dispatcher.CreateClient(token);
             var stream = client.Stream;
 
             while (!token.IsCancellationRequested)
@@ -189,7 +198,8 @@ public sealed class SocketServer : IAsyncDisposable
                     _progress.OnLog(LogLevel.Debug, $"Received from {client.Id}: <unparseable message>");
                 }
 
-                CommandResponse response;
+                CommandResponse? response = null;
+                var disconnectAfterResponse = false;
                 try
                 {
                     var request = JsonSerializer.Deserialize(json, DaemonSerializationContext.Default.CommandRequest);
@@ -207,7 +217,9 @@ public sealed class SocketServer : IAsyncDisposable
                         {
                             if (request.Type == "auth" && request.Parameters?.TryGetValue("secret", out var providedSecret) == true)
                             {
-                                if (providedSecret == _sharedSecret)
+                                var expectedBytes = Encoding.UTF8.GetBytes(_sharedSecret);
+                                var providedBytes = Encoding.UTF8.GetBytes(providedSecret ?? string.Empty);
+                                if (CryptographicOperations.FixedTimeEquals(expectedBytes, providedBytes))
                                 {
                                     client.IsAuthenticated = true;
                                     _progress.OnLog(LogLevel.Info, $"Client {client.Id} authenticated successfully");
@@ -217,21 +229,40 @@ public sealed class SocketServer : IAsyncDisposable
                                 {
                                     _progress.OnLog(LogLevel.Warning, $"Client {client.Id} failed authentication - invalid secret");
                                     response = new CommandResponse { Id = request.Id, Success = false, Error = "Authentication failed: invalid secret" };
-                                    break;
+                                    disconnectAfterResponse = true;
                                 }
                             }
                             else
                             {
                                 _progress.OnLog(LogLevel.Warning, $"Client {client.Id} sent command without authenticating first");
                                 response = new CommandResponse { Id = request.Id, Success = false, Error = "Authentication required. Send 'auth' command with secret first." };
-                                break;
+                                disconnectAfterResponse = true;
                             }
                         }
                         else
                         {
-                            response = await OnCommand(request, token);
+                            var commandHandler = OnCommand!;
+                            var lane = CommandLaneSelector?.Invoke(request) ?? DaemonCommandLane.Serialized;
+                            await commandClient.DispatchAsync(
+                                request.Id,
+                                lane,
+                                handlerToken => commandHandler(request, handlerToken),
+                                async (requestId, commandResponse, sendToken) =>
+                                {
+                                    commandResponse.Id = requestId;
+                                    await SendMessageAsync(
+                                        client,
+                                        commandResponse,
+                                        DaemonSerializationContext.Default.CommandResponse,
+                                        sendToken);
+                                });
+                            continue;
                         }
                     }
+                }
+                catch (OperationCanceledException) when (token.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -239,7 +270,11 @@ public sealed class SocketServer : IAsyncDisposable
                     response = new CommandResponse { Id = "error", Success = false, Error = ex.Message };
                 }
 
-                await SendMessageAsync(client, response, DaemonSerializationContext.Default.CommandResponse, token);
+                await SendMessageAsync(client, response!, DaemonSerializationContext.Default.CommandResponse, token);
+                if (disconnectAfterResponse)
+                {
+                    break;
+                }
             }
         }
         catch (OperationCanceledException) { }
@@ -249,6 +284,21 @@ public sealed class SocketServer : IAsyncDisposable
         }
         finally
         {
+            client.RequestCancellation();
+            if (commandClient != null)
+            {
+                try
+                {
+                    if (!await commandClient.DisconnectAsync(CancellationToken.None))
+                    {
+                        _progress.OnLog(LogLevel.Warning, $"Timed out draining handlers for client {client.Id}");
+                    }
+                }
+                catch (OperationCanceledException)
+                {
+                }
+            }
+
             _clients.TryRemove(client.Id, out _);
             client.Dispose();
             _progress.OnLog(LogLevel.Info, $"Client disconnected: {client.Id}");
@@ -320,7 +370,7 @@ public sealed class SocketServer : IAsyncDisposable
             await stream.WriteAsync(bytes, cancellationToken);
             await stream.FlushAsync(cancellationToken);
 
-            _progress.OnLog(LogLevel.Debug, $"Sent response to {client.Id}: {json[..Math.Min(200, json.Length)]}...");
+            _progress.OnLog(LogLevel.Debug, $"Sent {bytes.Length} bytes to {client.Id}");
         }
         finally
         {
@@ -342,10 +392,12 @@ public sealed class SocketServer : IAsyncDisposable
 
     public async Task StopAsync()
     {
-        _cts.Cancel();
+        await _cts.CancelAsync();
         foreach (var client in _clients.Values)
-            client.Dispose();
-        _clients.Clear();
+        {
+            client.RequestCancellation();
+        }
+
         _listener?.Close();
         _listener?.Dispose();
         _listener = null;
@@ -355,6 +407,17 @@ public sealed class SocketServer : IAsyncDisposable
             try { await _acceptTask; }
             catch (OperationCanceledException) { }
         }
+
+        if (!await _dispatcher.StopAsync())
+        {
+            _progress.OnLog(LogLevel.Warning, "Timed out draining command handlers during shutdown");
+        }
+
+        foreach (var client in _clients.Values)
+        {
+            client.Dispose();
+        }
+        _clients.Clear();
 
         if (_mode == SocketServerMode.UnixSocket && _socketPath != null && File.Exists(_socketPath))
         {
@@ -369,6 +432,7 @@ public sealed class SocketServer : IAsyncDisposable
     {
         if (_disposed) return;
         await StopAsync();
+        await _dispatcher.DisposeAsync();
         _cts.Dispose();
         _disposed = true;
     }
@@ -392,6 +456,8 @@ public sealed class SocketServer : IAsyncDisposable
 
     private class ConnectedClient : IDisposable
     {
+        private int _disposed;
+
         public string Id { get; }
         public Socket Socket { get; }
         public NetworkStream Stream { get; }
@@ -407,15 +473,26 @@ public sealed class SocketServer : IAsyncDisposable
             Stream = new NetworkStream(socket, ownsSocket: false);
         }
 
+        public void RequestCancellation()
+        {
+            try { CancellationTokenSource.Cancel(); }
+            catch (ObjectDisposedException) { }
+        }
+
         public void Dispose()
         {
-            CancellationTokenSource.Cancel();
-            CancellationTokenSource.Dispose();
-            SendLock.Dispose();
+            if (Interlocked.Exchange(ref _disposed, 1) != 0)
+            {
+                return;
+            }
+
+            RequestCancellation();
             Stream.Dispose();
             try { Socket.Shutdown(SocketShutdown.Both); }
             catch (SocketException) { /* Socket already disconnected */ }
             Socket.Dispose();
+            SendLock.Dispose();
+            CancellationTokenSource.Dispose();
         }
     }
 }

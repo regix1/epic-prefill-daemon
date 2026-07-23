@@ -42,14 +42,14 @@
         /// </summary>
         public void ClearOAuthToken() => _userAccountManager.OauthToken = null;
 
-        public async Task InitializeAsync()
+        public async Task InitializeAsync(CancellationToken cancellationToken = default)
         {
-            await _userAccountManager.LoginAsync();
+            await _userAccountManager.LoginAsync(cancellationToken);
         }
 
         public async Task DownloadMultipleAppsAsync(PrefillAppOrder order, bool force = false, List<string> manualIds = null, CancellationToken cancellationToken = default)
         {
-            var allOwnedGames = await GetAvailableGamesAsync();
+            var allOwnedGames = await GetAvailableGamesAsync(cancellationToken);
 
             List<string> appIdsToDownload;
             if (manualIds != null && manualIds.Count > 0)
@@ -87,7 +87,7 @@
 
                     await DownloadSingleAppAsync(app, force, cancellationToken);
                 }
-                catch (OperationCanceledException)
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     // Propagate cancellation - don't treat it as a download error
                     throw;
@@ -110,6 +110,8 @@
                 }
             }
 
+            cancellationToken.ThrowIfCancellationRequested();
+
             _ansiConsole.LogMarkupLine("Prefill complete!");
             _prefillSummaryResult.RenderSummaryTable(_ansiConsole);
 
@@ -131,6 +133,8 @@
         /// </summary>
         private async Task<List<string>> ResolveAppIdsForOrderAsync(PrefillAppOrder order, List<AppInfo> allOwnedGames, CancellationToken cancellationToken)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             switch (order)
             {
                 case PrefillAppOrder.AllOwned:
@@ -198,6 +202,8 @@
 
         private async Task DownloadSingleAppAsync(AppInfo app, bool force = false, CancellationToken cancellationToken = default)
         {
+            cancellationToken.ThrowIfCancellationRequested();
+
             // Only download the app if it isn't up to date
             if (force == false && _downloadArgs.Force == false && _appInfoHandler.AppIsUpToDate(app))
             {
@@ -214,9 +220,13 @@
             ManifestUrl manifestDownloadUrl;
             try
             {
-                manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app);
+                manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app, cancellationToken);
                 _progress.OnLog(LogLevel.Info, $"Manifest URL: {manifestDownloadUrl.ManifestDownloadUrlWithParams}");
                 _progress.OnLog(LogLevel.Info, $"Manifest CDN host: {manifestDownloadUrl.ManifestDownloadUri.Host}");
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -228,7 +238,14 @@
             byte[] rawManifestBytes;
             try
             {
-                rawManifestBytes = await _manifestHandler.DownloadManifestAsync(app, manifestDownloadUrl);
+                rawManifestBytes = await _manifestHandler.DownloadManifestAsync(
+                    app,
+                    manifestDownloadUrl,
+                    cancellationToken);
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
             }
             catch (Exception ex)
             {
@@ -238,6 +255,7 @@
             }
 
             var chunkDownloadQueue = _manifestHandler.ParseManifest(rawManifestBytes, manifestDownloadUrl);
+            cancellationToken.ThrowIfCancellationRequested();
 
             // Logging some metadata about the downloads
             var downloadTimer = Stopwatch.StartNew();
@@ -258,6 +276,7 @@
 
             // Finally run the queued downloads
             var downloadSuccessful = await _downloadHandler.DownloadQueuedChunksAsync(chunkDownloadQueue, manifestDownloadUrl, appId: app.AppId, appName: app.Title, cancellationToken: cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             if (downloadSuccessful)
             {
                 // Logging some metrics about the download
@@ -276,14 +295,16 @@
         }
 
         //TODO comment
-        public async Task<List<AppInfo>> GetAvailableGamesAsync()
+        public async Task<List<AppInfo>> GetAvailableGamesAsync(
+            CancellationToken cancellationToken = default)
         {
-            var ownedAssets = await _epicApi.GetOwnedAppsAsync();
-            var appMetadata = await _epicApi.LoadAppMetadataAsync(ownedAssets);
+            var ownedAssets = await _epicApi.GetOwnedAppsAsync(cancellationToken);
+            var appMetadata = await _epicApi.LoadAppMetadataAsync(ownedAssets, cancellationToken);
 
             var ownedApps = new List<AppInfo>();
             foreach (Asset asset in ownedAssets)
             {
+                cancellationToken.ThrowIfCancellationRequested();
                 var metadata = appMetadata[asset.AppId];
                 var app = new AppInfo
                 {
@@ -311,15 +332,23 @@
         /// <summary>
         /// Gets the manifest download URL for an app, which contains the CDN host and chunk base URL.
         /// </summary>
-        public async Task<ManifestUrl> GetManifestDownloadUrlAsync(AppInfo app)
+        public async Task<ManifestUrl> GetManifestDownloadUrlAsync(
+            AppInfo app,
+            CancellationToken cancellationToken = default)
         {
-            return await _epicApi.GetManifestDownloadUrlAsync(app);
+            return await _epicApi.GetManifestDownloadUrlAsync(app, cancellationToken);
         }
 
-        public async Task<long> GetAppDownloadSizeAsync(AppInfo app)
+        public async Task<long> GetAppDownloadSizeAsync(
+            AppInfo app,
+            CancellationToken cancellationToken = default)
         {
-            var manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app);
-            var rawManifestBytes = await _manifestHandler.DownloadManifestAsync(app, manifestDownloadUrl);
+            var manifestDownloadUrl = await _epicApi.GetManifestDownloadUrlAsync(app, cancellationToken);
+            var rawManifestBytes = await _manifestHandler.DownloadManifestAsync(
+                app,
+                manifestDownloadUrl,
+                cancellationToken);
+            cancellationToken.ThrowIfCancellationRequested();
             var chunkDownloadQueue = _manifestHandler.ParseManifest(rawManifestBytes, manifestDownloadUrl);
             return chunkDownloadQueue.Sum(e => (long)e.DownloadSizeBytes);
         }

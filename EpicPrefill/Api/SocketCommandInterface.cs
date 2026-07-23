@@ -15,13 +15,12 @@ public sealed class SocketCommandInterface : IDisposable
     private readonly SocketAuthProvider _authProvider;
     private readonly SocketProgress _progress;
     private readonly CancellationTokenSource _cts = new();
+    private readonly OwnedOperationCoordinator _prefillOperation = new();
     private CancellationTokenSource? _loginCts;
-    private CancellationTokenSource? _prefillCts;
     private EpicPrefillApi? _api;
     private Task? _loginTask;
     private bool _isLoggedIn;
     private bool _isLoggingIn;
-    private bool _isPrefilling;
     private bool _disposed;
 
     // Bumped by logout (and cancel-login) so a login task that is still unwinding (or already
@@ -51,6 +50,7 @@ public sealed class SocketCommandInterface : IDisposable
         _socketServer = new SocketServer(socketPath, _progress);
         _authProvider = new SocketAuthProvider(_socketServer, _progress);
         _socketServer.OnCommand = HandleCommandAsync;
+        _socketServer.CommandLaneSelector = SelectCommandLane;
 
         _progress.SocketServer = _socketServer;
     }
@@ -61,6 +61,7 @@ public sealed class SocketCommandInterface : IDisposable
         _socketServer = new SocketServer(tcpPort, _progress);
         _authProvider = new SocketAuthProvider(_socketServer, _progress);
         _socketServer.OnCommand = HandleCommandAsync;
+        _socketServer.CommandLaneSelector = SelectCommandLane;
 
         _progress.SocketServer = _socketServer;
     }
@@ -78,14 +79,15 @@ public sealed class SocketCommandInterface : IDisposable
 
     public async Task StopAsync()
     {
-        _cts.Cancel();
+        await _cts.CancelAsync();
+        await _prefillOperation.CancelAndWaitAsync();
         await _socketServer.StopAsync();
         _progress.OnLog(LogLevel.Info, "Socket command interface stopped");
     }
 
     private async Task<CommandResponse> HandleCommandAsync(CommandRequest request, CancellationToken cancellationToken)
     {
-        _progress.OnLog(LogLevel.Info, $"Processing command: {request.Type} (ID: {request.Id})");
+        _progress.OnLog(LogLevel.Debug, $"Processing command: {request.Type} (ID: {request.Id})");
 
         if (!_isLoggedIn && !PreLoginCommands.Contains(request.Type))
         {
@@ -105,9 +107,9 @@ public sealed class SocketCommandInterface : IDisposable
             {
                 "login" => await HandleLoginAsync(request, cancellationToken),
                 "provide-auto-login" => HandleProvideAutoLogin(request),
-                "logout" => await HandleLogoutAsync(request),
+                "logout" => await HandleLogoutAsync(request, cancellationToken),
                 "cancel-login" => await HandleCancelLoginAsync(request),
-                "cancel-prefill" => HandleCancelPrefill(request),
+                "cancel-prefill" => await HandleCancelPrefillAsync(request, cancellationToken),
                 "provide-credential" => HandleProvideCredential(request),
                 "status" => HandleStatus(request),
                 "get-owned-games" => await HandleGetOwnedGamesAsync(request, cancellationToken),
@@ -119,7 +121,7 @@ public sealed class SocketCommandInterface : IDisposable
                 "clear-cache" => HandleClearCache(request),
                 "get-cache-info" => HandleGetCacheInfo(request),
                 "check-cache-status" => await HandleCheckCacheStatusAsync(request, cancellationToken),
-                "shutdown" => HandleShutdown(request),
+                "shutdown" => await HandleShutdownAsync(request, cancellationToken),
                 _ => new CommandResponse
                 {
                     Id = request.Id,
@@ -128,6 +130,10 @@ public sealed class SocketCommandInterface : IDisposable
                     CompletedAt = DateTime.UtcNow
                 }
             };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -141,6 +147,17 @@ public sealed class SocketCommandInterface : IDisposable
             };
         }
     }
+
+    private static DaemonCommandLane SelectCommandLane(CommandRequest request)
+        => request.Type.ToLowerInvariant() switch
+        {
+            "cancel-login" or "cancel-prefill" or "status" or "shutdown"
+                => DaemonCommandLane.Control,
+            "get-owned-games" or "get-cdn-info" or "get-selected-apps" or
+            "get-selected-apps-status" or "get-cache-info" or "check-cache-status"
+                => DaemonCommandLane.Concurrent,
+            _ => DaemonCommandLane.Serialized
+        };
 
     private Task<CommandResponse> HandleLoginAsync(CommandRequest request, CancellationToken cancellationToken)
     {
@@ -198,7 +215,7 @@ public sealed class SocketCommandInterface : IDisposable
 
                 await BroadcastStatusAsync("logged-in", "Authenticated and ready for commands", api.DisplayName);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (loginCts.Token.IsCancellationRequested)
             {
                 _progress.OnLog(LogLevel.Info, "Login cancelled");
                 if (loginGeneration != Interlocked.Read(ref _loginGeneration))
@@ -300,7 +317,7 @@ public sealed class SocketCommandInterface : IDisposable
 
                 await BroadcastStatusAsync("logged-in", "Authenticated and ready for commands", api.DisplayName);
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (loginCts.Token.IsCancellationRequested)
             {
                 _progress.OnLog(LogLevel.Info, "Headless login cancelled");
                 if (loginGeneration != Interlocked.Read(ref _loginGeneration))
@@ -340,11 +357,12 @@ public sealed class SocketCommandInterface : IDisposable
         };
     }
 
-    private async Task<CommandResponse> HandleLogoutAsync(CommandRequest request)
+    private async Task<CommandResponse> HandleLogoutAsync(
+        CommandRequest request,
+        CancellationToken cancellationToken)
     {
-        // Bump the generation so any login task still unwinding (or one that never observes
-        // the cancellation below - Epic's OAuth exchange doesn't check the token mid-flight)
-        // cannot resurrect _isLoggedIn/_api once it finally settles.
+        // Bump the generation so any login task still unwinding cannot resurrect
+        // _isLoggedIn/_api once it finally settles.
         Interlocked.Increment(ref _loginGeneration);
 
         // Logout while a login is in progress: cancel it the same way cancel-login does, then
@@ -365,10 +383,11 @@ public sealed class SocketCommandInterface : IDisposable
             var loginTask = _loginTask;
             if (loginTask != null)
             {
-                await Task.WhenAny(loginTask, Task.Delay(LogoutLoginTaskTimeout));
+                await Task.WhenAny(loginTask, Task.Delay(LogoutLoginTaskTimeout, CancellationToken.None));
             }
         }
 
+        await _prefillOperation.CancelAndWaitAsync(cancellationToken);
         CleanupApiInstance();
 
         // Wipe the persisted account file AND its storage.key so the refresh token cannot linger
@@ -412,9 +431,11 @@ public sealed class SocketCommandInterface : IDisposable
         };
     }
 
-    private CommandResponse HandleCancelPrefill(CommandRequest request)
+    private async Task<CommandResponse> HandleCancelPrefillAsync(
+        CommandRequest request,
+        CancellationToken cancellationToken)
     {
-        if (!_isPrefilling)
+        if (!_prefillOperation.IsRunning)
         {
             return new CommandResponse
             {
@@ -423,12 +444,11 @@ public sealed class SocketCommandInterface : IDisposable
         }
 
         _progress.OnLog(LogLevel.Info, "Cancelling prefill...");
-        try { _prefillCts?.Cancel(); }
-        catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error cancelling prefill CTS: {ex.Message}"); }
+        await _prefillOperation.CancelAndWaitAsync(cancellationToken);
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Prefill cancellation requested", CompletedAt = DateTime.UtcNow
+            Id = request.Id, Success = true, Message = "Prefill cancelled", CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -492,6 +512,7 @@ public sealed class SocketCommandInterface : IDisposable
             {
                 IsLoggedIn = _isLoggedIn,
                 IsInitialized = _api?.IsInitialized ?? false,
+                IsPrefilling = _prefillOperation.IsRunning,
                 AuthExpiryUtc = ToUtcIso(storedToken?.RefreshTokenExpiresAt),
                 AccessExpiryUtc = ToUtcIso(storedToken?.ExpiresAt),
                 AccountDisplayName = storedToken?.DisplayName
@@ -605,16 +626,18 @@ public sealed class SocketCommandInterface : IDisposable
         };
     }
 
-    private Task<CommandResponse> HandlePrefillAsync(CommandRequest request, CancellationToken cancellationToken)
+    private async Task<CommandResponse> HandlePrefillAsync(
+        CommandRequest request,
+        CancellationToken cancellationToken)
     {
         EnsureLoggedIn();
 
-        if (_isPrefilling)
+        if (_prefillOperation.IsRunning)
         {
-            return Task.FromResult(new CommandResponse
+            return new CommandResponse
             {
                 Id = request.Id, Success = false, Error = "A prefill is already in progress", CompletedAt = DateTime.UtcNow
-            });
+            };
         }
 
         var options = new PrefillOptions();
@@ -631,47 +654,34 @@ public sealed class SocketCommandInterface : IDisposable
                 options.Force = force;
         }
 
-        _prefillCts?.Dispose();
-        _prefillCts = CancellationTokenSource.CreateLinkedTokenSource(_cts.Token);
-        _isPrefilling = true;
-
-        _ = Task.Run(async () =>
+        await _prefillOperation.StartAsync(async operationToken =>
         {
             try
             {
-                var result = await _api!.PrefillAsync(options, _prefillCts.Token);
+                var result = await _api!.PrefillAsync(options, operationToken);
+                operationToken.ThrowIfCancellationRequested();
 
                 if (result.Success)
+                {
                     _progress.OnLog(LogLevel.Info, "Prefill completed successfully");
+                }
                 else
+                {
                     _progress.OnLog(LogLevel.Warning, $"Prefill completed with errors: {result.ErrorMessage}");
+                    throw new InvalidOperationException(result.ErrorMessage ?? "Prefill failed");
+                }
             }
-            catch (OperationCanceledException)
+            catch (OperationCanceledException) when (operationToken.IsCancellationRequested)
             {
-                _progress.OnLog(LogLevel.Info, "Prefill cancelled by user");
-                // Emit a terminal socket event so the backend always clears IsPrefilling.
-                // Reuse the existing terminal "error" state; the backend terminal funnel is idempotent.
-                _progress.OnError("Prefill cancelled by user");
+                _progress.OnCancelled("Prefill cancelled by user");
+                throw;
             }
-            catch (Exception ex)
-            {
-                _progress.OnLog(LogLevel.Error, $"Prefill failed: {ex.Message}");
-                // Emit a terminal socket event so the backend always clears IsPrefilling
-                // even when PrefillAsync throws without emitting one itself.
-                _progress.OnError($"Prefill failed: {ex.Message}", ex);
-            }
-            finally
-            {
-                _isPrefilling = false;
-                _prefillCts?.Dispose();
-                _prefillCts = null;
-            }
-        }, _prefillCts.Token);
+        }, _cts.Token);
 
-        return Task.FromResult(new CommandResponse
+        return new CommandResponse
         {
             Id = request.Id, Success = true, Message = "Prefill started", CompletedAt = DateTime.UtcNow
-        });
+        };
     }
 
     private CommandResponse HandleClearCache(CommandRequest request)
@@ -730,8 +740,11 @@ public sealed class SocketCommandInterface : IDisposable
         };
     }
 
-    private CommandResponse HandleShutdown(CommandRequest request)
+    private async Task<CommandResponse> HandleShutdownAsync(
+        CommandRequest request,
+        CancellationToken cancellationToken)
     {
+        await _prefillOperation.CancelAndWaitAsync(cancellationToken);
         CleanupApiInstance();
 
         return new CommandResponse
@@ -819,7 +832,7 @@ public sealed class SocketCommandInterface : IDisposable
 
         _cts.Cancel();
         _loginCts?.Dispose();
-        _prefillCts?.Dispose();
+        _prefillOperation.DisposeAsync().AsTask().GetAwaiter().GetResult();
         _cts.Dispose();
         _api?.Dispose();
         _authProvider.Dispose();
@@ -832,14 +845,25 @@ public sealed class SocketCommandInterface : IDisposable
     /// <summary>
     /// Progress implementation that broadcasts updates via socket.
     /// </summary>
-    private sealed class SocketProgress : IPrefillProgress
+    internal sealed class SocketProgress : IPrefillProgress
     {
         public SocketServer? SocketServer { get; set; }
+        private readonly DaemonLogSink _logSink = new(
+            Console.WriteLine,
+            AppConfig.DebugLogs ? DaemonLogLevel.Debug : DaemonLogLevel.Info);
         private DateTime _lastProgressBroadcast = DateTime.MinValue;
         private static readonly TimeSpan BroadcastThrottle = TimeSpan.FromMilliseconds(250);
 
         public void OnLog(LogLevel level, string message)
         {
+            var daemonLevel = level switch
+            {
+                LogLevel.Debug => DaemonLogLevel.Debug,
+                LogLevel.Info => DaemonLogLevel.Info,
+                LogLevel.Warning => DaemonLogLevel.Warning,
+                LogLevel.Error => DaemonLogLevel.Error,
+                _ => DaemonLogLevel.Info
+            };
             var prefix = level switch
             {
                 LogLevel.Debug => "[DEBUG]",
@@ -848,7 +872,7 @@ public sealed class SocketCommandInterface : IDisposable
                 LogLevel.Error => "[ERROR]",
                 _ => "[LOG]"
             };
-            Console.WriteLine($"{DateTime.UtcNow:HH:mm:ss} {prefix} {message}");
+            _logSink.Write(daemonLevel, $"{DateTime.UtcNow:HH:mm:ss} {prefix} {message}");
         }
 
         public void OnOperationStarted(string operationName)
@@ -883,7 +907,7 @@ public sealed class SocketCommandInterface : IDisposable
             var downloadedStr = FormatBytes(progress.BytesDownloaded);
             var totalStr = FormatBytes(progress.TotalBytes);
             var speedStr = FormatBytes((long)progress.BytesPerSecond) + "/s";
-            OnLog(LogLevel.Info, $"{progress.AppName}: {progress.PercentComplete:F1}% - {speedStr} - {downloadedStr} / {totalStr}");
+            OnLog(LogLevel.Debug, $"{progress.AppName}: {progress.PercentComplete:F1}% - {speedStr} - {downloadedStr} / {totalStr}");
 
             BroadcastProgress(new PrefillProgressUpdate
             {
@@ -952,6 +976,17 @@ public sealed class SocketCommandInterface : IDisposable
             BroadcastProgress(new PrefillProgressUpdate
             {
                 State = "error",
+                ErrorMessage = message,
+                UpdatedAt = DateTime.UtcNow
+            });
+        }
+
+        public void OnCancelled(string message)
+        {
+            OnLog(LogLevel.Info, message);
+            BroadcastProgress(new PrefillProgressUpdate
+            {
+                State = "cancelled",
                 ErrorMessage = message,
                 UpdatedAt = DateTime.UtcNow
             });

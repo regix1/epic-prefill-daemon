@@ -11,30 +11,11 @@ public static class DaemonMode
         string socketPath = "/responses/daemon.sock",
         CancellationToken cancellationToken = default)
     {
-        Console.WriteLine("Starting EpicPrefill daemon...");
-        Console.WriteLine($"Socket path: {socketPath}");
-        Console.WriteLine();
-        Console.WriteLine("┌──────────────────────────────────────────────────────────────┐");
-        Console.WriteLine("│ UNIX SOCKET IPC                                              │");
-        Console.WriteLine("├──────────────────────────────────────────────────────────────┤");
-        Console.WriteLine("│ • Reliable bidirectional communication                       │");
-        Console.WriteLine("│ • Low latency (<1ms)                                         │");
-        Console.WriteLine("│ • Works in both host and bridge Docker network modes         │");
-        Console.WriteLine("│ • Real-time progress streaming                               │");
-        Console.WriteLine("├──────────────────────────────────────────────────────────────┤");
-        Console.WriteLine("│ SECURITY                                                     │");
-        Console.WriteLine("├──────────────────────────────────────────────────────────────┤");
-        Console.WriteLine("│ • Login is REQUIRED before any other commands                │");
-        Console.WriteLine("│ • All credentials are encrypted using ECDH + AES-GCM         │");
-        Console.WriteLine("│ • Challenges expire after 5 minutes                          │");
-        Console.WriteLine("└──────────────────────────────────────────────────────────────┘");
-        Console.WriteLine();
+        Console.WriteLine($"Starting EpicPrefill daemon on Unix socket {socketPath}");
 
         using var socketInterface = new SocketCommandInterface(socketPath);
 
         await socketInterface.StartAsync(cancellationToken);
-
-        Console.WriteLine("Daemon started. Waiting for connections...");
 
         using var lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var lifetimeTimer = StartMaxLifetimeTimer(lifetimeCts);
@@ -79,29 +60,11 @@ public static class DaemonMode
         int port,
         CancellationToken cancellationToken = default)
     {
-        Console.WriteLine("Starting EpicPrefill daemon (TCP mode)...");
-        Console.WriteLine($"TCP port: {port}");
-        Console.WriteLine();
-        Console.WriteLine("┌──────────────────────────────────────────────────────────────┐");
-        Console.WriteLine("│ TCP IPC                                                     │");
-        Console.WriteLine("├──────────────────────────────────────────────────────────────┤");
-        Console.WriteLine("│ • Reliable bidirectional communication                       │");
-        Console.WriteLine("│ • Useful for Windows Docker Desktop bind mounts              │");
-        Console.WriteLine("│ • Real-time progress streaming                               │");
-        Console.WriteLine("├──────────────────────────────────────────────────────────────┤");
-        Console.WriteLine("│ SECURITY                                                     │");
-        Console.WriteLine("├──────────────────────────────────────────────────────────────┤");
-        Console.WriteLine("│ • Login is REQUIRED before any other commands                │");
-        Console.WriteLine("│ • All credentials are encrypted using ECDH + AES-GCM         │");
-        Console.WriteLine("│ • Challenges expire after 5 minutes                          │");
-        Console.WriteLine("└──────────────────────────────────────────────────────────────┘");
-        Console.WriteLine();
+        Console.WriteLine($"Starting EpicPrefill daemon on TCP port {port}");
 
         using var socketInterface = new SocketCommandInterface(port);
 
         await socketInterface.StartAsync(cancellationToken);
-
-        Console.WriteLine("Daemon started. Waiting for connections...");
 
         using var lifetimeCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
         using var lifetimeTimer = StartMaxLifetimeTimer(lifetimeCts);

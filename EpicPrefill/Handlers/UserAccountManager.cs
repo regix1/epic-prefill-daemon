@@ -35,7 +35,7 @@ namespace EpicPrefill.Handlers
             _client.DefaultRequestHeaders.Add("User-Agent", AppConfig.DefaultUserAgent);
         }
 
-        public async Task LoginAsync()
+        public async Task LoginAsync(CancellationToken cancellationToken = default)
         {
             if (!OauthTokenIsExpired())
             {
@@ -46,29 +46,41 @@ namespace EpicPrefill.Handlers
             int retryCount = 0;
             while (OauthTokenIsExpired() && retryCount < MaxRetries)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 try
                 {
-                    var requestParams = await BuildRequestParamsAsync();
+                    var requestParams = await BuildRequestParamsAsync(cancellationToken);
 
                     var authUri = new Uri($"https://{OauthHost}/account/api/oauth/token");
                     using var request = new HttpRequestMessage(HttpMethod.Post, authUri);
                     request.Headers.Authorization = BasicAuthentication.ToAuthenticationHeader(BasicUsername, BasicPassword);
                     request.Content = new FormUrlEncodedContent(requestParams);
 
-                    using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseContentRead);
+                    using var response = await _client.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseContentRead,
+                        cancellationToken);
 
                     if (!response.IsSuccessStatusCode)
                     {
-                        var errorBody = await response.Content.ReadAsStringAsync();
+                        var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
                         CheckForCorrectiveAction(errorBody);
                         // Not a corrective action - throw generic HTTP error
                         response.EnsureSuccessStatusCode();
                     }
 
-                    using var responseStream = await response.Content.ReadAsStreamAsync();
-                    OauthToken = await JsonSerializer.DeserializeAsync(responseStream, SerializationContext.Default.OauthToken);
+                    using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                    OauthToken = await JsonSerializer.DeserializeAsync(
+                        responseStream,
+                        SerializationContext.Default.OauthToken,
+                        cancellationToken);
 
                     Save();
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (EpicLoginException)
                 {
@@ -141,7 +153,8 @@ namespace EpicPrefill.Handlers
             }
         }
 
-        private async Task<Dictionary<string, string>> BuildRequestParamsAsync()
+        private async Task<Dictionary<string, string>> BuildRequestParamsAsync(
+            CancellationToken cancellationToken = default)
         {
             // Handles the user logging in for the first time, as well as when the refresh token has expired, or when an unknown failure has occurred
             if (OauthToken == null || RefreshTokenIsExpired())
@@ -153,7 +166,7 @@ namespace EpicPrefill.Handlers
 
                 _ansiConsole.LogMarkupLine("Requesting authorization code via auth provider...");
 
-                var authCode = await _authProvider.GetAuthorizationCodeAsync(LoginUrl);
+                var authCode = await _authProvider.GetAuthorizationCodeAsync(LoginUrl, cancellationToken);
 
                 return new Dictionary<string, string>
                 {

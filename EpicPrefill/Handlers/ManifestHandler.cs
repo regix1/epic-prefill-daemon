@@ -17,13 +17,16 @@
         /// Only downloads the raw response, doesn't do any further processing.
         /// </summary>
         /// <returns>The raw bytes for the downloaded manifest</returns>
-        public async Task<byte[]> DownloadManifestAsync(AppInfo appInfo, ManifestUrl manifestDownloadUrl)
+        public async Task<byte[]> DownloadManifestAsync(
+            AppInfo appInfo,
+            ManifestUrl manifestDownloadUrl,
+            CancellationToken cancellationToken = default)
         {
             // Load from disk if manifest already exists
             var cachedFileName = Path.Combine(AppConfig.TempDir, $"{appInfo.AppId}-{appInfo.BuildVersion}");
             if (ManifestIsCached(cachedFileName))
             {
-                return await File.ReadAllBytesAsync(cachedFileName);
+                return await File.ReadAllBytesAsync(cachedFileName, cancellationToken);
             }
 
             byte[] responseAsBytes = null;
@@ -32,13 +35,16 @@
                 var timer = Stopwatch.StartNew();
                 using var request = new HttpRequestMessage(HttpMethod.Get, manifestDownloadUrl.ManifestDownloadUrlWithParams);
 
-                using var httpClient = await _httpClientFactory.GetHttpClientAsync();
-                using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+                using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+                using var response = await httpClient.SendAsync(
+                    request,
+                    HttpCompletionOption.ResponseHeadersRead,
+                    cancellationToken);
                 response.EnsureSuccessStatusCode();
 
-                responseAsBytes = await response.Content.ReadAsByteArrayAsync();
+                responseAsBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
                 // Cache to disk
-                await File.WriteAllBytesAsync(cachedFileName, responseAsBytes);
+                await File.WriteAllBytesAsync(cachedFileName, responseAsBytes, cancellationToken);
 
                 _ansiConsole.LogMarkupLine("Downloaded manifest", timer);
             });

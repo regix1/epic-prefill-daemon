@@ -57,11 +57,15 @@ public sealed class EpicPrefillApi : IDisposable
 
             _epicManager = new EpicGamesManager(consoleAdapter, downloadArgs, _authProvider, _progress);
 
-            await _epicManager.InitializeAsync();
+            await _epicManager.InitializeAsync(cancellationToken);
             _isInitialized = true;
 
             _progress.OnOperationCompleted("Initializing Epic Games connection", timer.Elapsed);
             _progress.OnLog(LogLevel.Info, "Successfully logged into Epic Games");
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -83,7 +87,7 @@ public sealed class EpicPrefillApi : IDisposable
 
         try
         {
-            var apps = await _epicManager!.GetAvailableGamesAsync();
+            var apps = await _epicManager!.GetAvailableGamesAsync(cancellationToken);
             var result = apps.Select(a => new OwnedGame
             {
                 AppId = a.AppId,
@@ -92,6 +96,10 @@ public sealed class EpicPrefillApi : IDisposable
 
             _progress.OnOperationCompleted("Fetching owned games", timer.Elapsed);
             return result;
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -115,7 +123,7 @@ public sealed class EpicPrefillApi : IDisposable
 
         try
         {
-            var allGames = await _epicManager!.GetAvailableGamesAsync();
+            var allGames = await _epicManager!.GetAvailableGamesAsync(cancellationToken);
 
             // Filter to requested appIds if provided
             if (appIds != null && appIds.Count > 0)
@@ -127,11 +135,11 @@ public sealed class EpicPrefillApi : IDisposable
             var results = new List<CdnInfo>();
             foreach (var app in allGames)
             {
-                if (cancellationToken.IsCancellationRequested) break;
+                cancellationToken.ThrowIfCancellationRequested();
 
                 try
                 {
-                    var manifestUrl = await _epicManager.GetManifestDownloadUrlAsync(app);
+                    var manifestUrl = await _epicManager.GetManifestDownloadUrlAsync(app, cancellationToken);
                     results.Add(new CdnInfo
                     {
                         AppId = app.AppId,
@@ -139,6 +147,10 @@ public sealed class EpicPrefillApi : IDisposable
                         CdnHost = manifestUrl.ManifestDownloadUri.Host,
                         ChunkBaseUrl = manifestUrl.ChunkBaseUrl
                     });
+                }
+                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                {
+                    throw;
                 }
                 catch (Exception ex)
                 {
@@ -153,6 +165,10 @@ public sealed class EpicPrefillApi : IDisposable
                 Apps = results,
                 Message = $"Retrieved CDN info for {results.Count} of {allGames.Count} games"
             };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -199,7 +215,7 @@ public sealed class EpicPrefillApi : IDisposable
 
         try
         {
-            var allGames = await _epicManager!.GetAvailableGamesAsync();
+            var allGames = await _epicManager!.GetAvailableGamesAsync(cancellationToken);
             var gamesByAppId = allGames.ToDictionary(g => g.AppId, g => g);
 
             var apps = new List<AppStatus>();
@@ -207,6 +223,8 @@ public sealed class EpicPrefillApi : IDisposable
 
             foreach (var appId in selectedAppIds)
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (!gamesByAppId.TryGetValue(appId, out var game))
                 {
                     apps.Add(new AppStatus { AppId = appId, Name = appId, DownloadSize = 0, IsUpToDate = false });
@@ -220,7 +238,11 @@ public sealed class EpicPrefillApi : IDisposable
                 {
                     try
                     {
-                        downloadSize = await _epicManager.GetAppDownloadSizeAsync(game);
+                        downloadSize = await _epicManager.GetAppDownloadSizeAsync(game, cancellationToken);
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
                     }
                     catch (Exception ex)
                     {
@@ -243,6 +265,10 @@ public sealed class EpicPrefillApi : IDisposable
                 Apps = apps,
                 TotalDownloadSize = totalDownloadSize
             };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -276,12 +302,14 @@ public sealed class EpicPrefillApi : IDisposable
 
         try
         {
-            var allGames = await _epicManager!.GetAvailableGamesAsync();
+            var allGames = await _epicManager!.GetAvailableGamesAsync(cancellationToken);
             var gamesByAppId = allGames.ToDictionary(g => g.AppId, g => g);
 
             var apps = new List<AppCacheStatus>();
             foreach (var appId in appIds.Distinct())
             {
+                cancellationToken.ThrowIfCancellationRequested();
+
                 if (gamesByAppId.TryGetValue(appId, out var game))
                 {
                     apps.Add(new AppCacheStatus
@@ -298,6 +326,10 @@ public sealed class EpicPrefillApi : IDisposable
                 Apps = apps,
                 Message = $"Checked {apps.Count} apps"
             };
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
         }
         catch (Exception ex)
         {
@@ -358,15 +390,10 @@ public sealed class EpicPrefillApi : IDisposable
                 TotalTime = timer.Elapsed
             };
         }
-        catch (OperationCanceledException)
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
             _progress.OnLog(LogLevel.Info, "Prefill operation cancelled");
-            return new PrefillResult
-            {
-                Success = false,
-                ErrorMessage = "Prefill cancelled",
-                TotalTime = timer.Elapsed
-            };
+            throw;
         }
         catch (Exception ex)
         {

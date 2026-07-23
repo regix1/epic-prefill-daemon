@@ -26,7 +26,7 @@
         /// Gets a list of all owned apps for the currently logged in account.
         /// </summary>
         /// <returns></returns>
-        internal async Task<List<Asset>> GetOwnedAppsAsync()
+        internal async Task<List<Asset>> GetOwnedAppsAsync(CancellationToken cancellationToken = default)
         {
             //TODO this should probably be inside a status spinner
             _ansiConsole.LogMarkupLine("Retrieving owned apps");
@@ -37,18 +37,24 @@
             using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
 
             // Send request
-            using var httpClient = await _httpClientFactory.GetHttpClientAsync();
-            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+            using var response = await httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
             response.EnsureSuccessStatusCode();
 
             // Read and deserialize
-            var responseContent = await response.Content.ReadAsStringAsync();
+            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
             var ownedApps = JsonSerializer.Deserialize(responseContent, SerializationContext.Default.ListAsset);
 
             // Dumping out the raw json if -debug is enabled
             if (AppConfig.DebugLogs)
             {
-                await File.WriteAllTextAsync($@"{AppConfig.DebugOutputDir}\assetsResponse.json", responseContent);
+                await File.WriteAllTextAsync(
+                    $@"{AppConfig.DebugOutputDir}\assetsResponse.json",
+                    responseContent,
+                    cancellationToken);
             }
 
             // Removing anything related to unreal engine.  We're only interested in actual games
@@ -77,7 +83,7 @@
             var requestUri = new Uri($"{LibraryHost}/library/api/public/playtime/account/{accountId}/all");
             using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
 
-            using var httpClient = await _httpClientFactory.GetHttpClientAsync();
+            using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
 
@@ -100,14 +106,16 @@
         /// If the metadata has already been loaded before then a cached copy will be returned from disk.  If any of the apps are new and have not had their
         /// metadata loaded already then they will be requested and cached for future use.
         /// </summary>
-        public async Task<Dictionary<string, AppMetadataResponse>> LoadAppMetadataAsync(List<Asset> apps)
+        public async Task<Dictionary<string, AppMetadataResponse>> LoadAppMetadataAsync(
+            List<Asset> apps,
+            CancellationToken cancellationToken = default)
         {
             var metadataDictionary = new Dictionary<string, AppMetadataResponse>();
 
             // Load cache from disk, if it exists
             if (File.Exists(MetadataCachePath))
             {
-                var allText = await File.ReadAllTextAsync(MetadataCachePath);
+                var allText = await File.ReadAllTextAsync(MetadataCachePath, cancellationToken);
                 metadataDictionary = JsonSerializer.Deserialize(allText, SerializationContext.Default.DictionaryStringAppMetadataResponse);
             }
 
@@ -128,7 +136,8 @@
 
                 foreach (var app in appsMissingMetadata)
                 {
-                    var metadata = await GetSingleAppMetadataAsync(app);
+                    cancellationToken.ThrowIfCancellationRequested();
+                    var metadata = await GetSingleAppMetadataAsync(app, cancellationToken);
                     metadataDictionary.Add(app.AppId, metadata);
                     progressTask.Increment(1);
                 }
@@ -138,7 +147,7 @@
 
             // Serialize new metadata
             var serialized = JsonSerializer.Serialize(metadataDictionary, SerializationContext.Default.DictionaryStringAppMetadataResponse);
-            await File.WriteAllTextAsync(MetadataCachePath, serialized);
+            await File.WriteAllTextAsync(MetadataCachePath, serialized, cancellationToken);
 
             return metadataDictionary;
         }
@@ -146,7 +155,9 @@
         /// <summary>
         /// Gets additional metadata about a single app from Epic's API.  The only real thing that we are really interested in here is the app's title.
         /// </summary>
-        private async Task<AppMetadataResponse> GetSingleAppMetadataAsync(Asset app)
+        private async Task<AppMetadataResponse> GetSingleAppMetadataAsync(
+            Asset app,
+            CancellationToken cancellationToken = default)
         {
             // Building request
             var baseUrl = $"{CatalogHost}/catalog/api/shared/namespace/{app.Namespace}/bulk/items";
@@ -162,40 +173,54 @@
             using var request = new HttpRequestMessage(HttpMethod.Get, new Uri(urlWithParams));
 
             // Send request
-            using var httpClient = await _httpClientFactory.GetHttpClientAsync();
-            using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead);
+            using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+            using var response = await httpClient.SendAsync(
+                request,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
             response.EnsureSuccessStatusCode();
 
-            var responseContent = await response.Content.ReadAsStringAsync();
+            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
             var appMetadata = JsonSerializer.Deserialize(responseContent, SerializationContext.Default.DictionaryStringAppMetadataResponse);
 
             // Dumping out the raw json if -debug is enabled
             if (AppConfig.DebugLogs)
             {
-                await File.WriteAllTextAsync($@"{AppConfig.MetadataOutputDir}\{app.AppId}.json", responseContent);
+                await File.WriteAllTextAsync(
+                    $@"{AppConfig.MetadataOutputDir}\{app.AppId}.json",
+                    responseContent,
+                    cancellationToken);
             }
 
             return appMetadata.Values.First();
         }
 
         //TODO comment
-        public async Task<ManifestUrl> GetManifestDownloadUrlAsync(AppInfo app)
+        public async Task<ManifestUrl> GetManifestDownloadUrlAsync(
+            AppInfo app,
+            CancellationToken cancellationToken = default)
         {
             var url = $"{LauncherHost}/launcher/api/public/assets/v2/platform/Windows/namespace/{app.Namespace}/" +
                             $"catalogItem/{app.CatalogItemId}/app/{app.AppId}/label/Live";
 
             using var requestMessage = new HttpRequestMessage(HttpMethod.Get, new Uri(url));
-            using var httpClient = await _httpClientFactory.GetHttpClientAsync();
-            using var response = await httpClient.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead);
+            using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+            using var response = await httpClient.SendAsync(
+                requestMessage,
+                HttpCompletionOption.ResponseHeadersRead,
+                cancellationToken);
             response.EnsureSuccessStatusCode();
 
-            var responseContent = await response.Content.ReadAsStringAsync();
+            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
             ManifestResponse deserialized = JsonSerializer.Deserialize(responseContent, SerializationContext.Default.ManifestResponse);
 
             // Dumping out the raw json if -debug is enabled
             if (AppConfig.DebugLogs)
             {
-                await File.WriteAllTextAsync($@"{AppConfig.DownloadUrlPath}\{app.AppId}.json", responseContent);
+                await File.WriteAllTextAsync(
+                    $@"{AppConfig.DownloadUrlPath}\{app.AppId}.json",
+                    responseContent,
+                    cancellationToken);
             }
 
             var allManifests = deserialized.elements.First().manifests.ToList();

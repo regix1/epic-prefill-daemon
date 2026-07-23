@@ -36,6 +36,7 @@ public class StatusData
 {
     public bool IsLoggedIn { get; init; }
     public bool IsInitialized { get; init; }
+    public bool IsPrefilling { get; init; }
 
     /// <summary>
     /// UTC ISO-8601 expiry of the refresh token (refresh_expires_at). Null when not logged in / no token on disk.

@@ -11,22 +11,10 @@ namespace EpicPrefill
             {
                 ParseHiddenFlags();
 
-                Console.WriteLine($"""
-                    ╔═══════════════════════════════════════════════════════════╗
-                    ║              EpicPrefill Daemon                           ║
-                    ║                  v{ThisAssembly.Info.InformationalVersion,-20}             ║
-                    ╚═══════════════════════════════════════════════════════════╝
-
-                    """);
+                Console.WriteLine($"EpicPrefill daemon v{ThisAssembly.Info.InformationalVersion}");
 
                 var tcpPortEnv = Environment.GetEnvironmentVariable("PREFILL_TCP_PORT");
                 var useTcp = int.TryParse(tcpPortEnv, out var tcpPort) && tcpPort > 0;
-
-                if (!useTcp)
-                {
-                    Console.WriteLine("Using Unix Domain Socket for reliable, low-latency IPC.");
-                    Console.WriteLine();
-                }
 
                 var responsesDir = Environment.GetEnvironmentVariable("PREFILL_RESPONSES_DIR") ?? "/responses";
                 var socketPath = Environment.GetEnvironmentVariable("PREFILL_SOCKET_PATH") ??
