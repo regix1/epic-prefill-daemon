@@ -7,6 +7,7 @@
     [JsonSerializable(typeof(List<PlaytimeEntry>))]
     [JsonSerializable(typeof(List<string>))]
     [JsonSerializable(typeof(Dictionary<string, AppMetadataResponse>))]
+    [JsonSerializable(typeof(List<KeyImage>))]
     [JsonSerializable(typeof(JsonManifest))]
     [JsonSerializable(typeof(Dictionary<string, HashSet<string>>))]
     internal sealed partial class SerializationContext : JsonSerializerContext

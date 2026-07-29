@@ -9,6 +9,8 @@
         public string Namespace { get; set; }
 
         public string Title { get; set; }
+        // Null whenever Epic returned no artwork for the app, so every read has to allow for that.
+        public List<KeyImage> KeyImages { get; set; }
 
         public override string ToString()
         {

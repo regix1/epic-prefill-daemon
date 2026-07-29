@@ -16,6 +16,13 @@
 
         private string MetadataCachePath => Path.Combine(AppConfig.TempDir, "metadataCache.json");
 
+        /// <summary>
+        /// How many freshly fetched apps to accumulate before the cache is written again. Small enough
+        /// that a killed process loses little, large enough that a big library is not rewriting the whole
+        /// file once per app.
+        /// </summary>
+        private const int MetadataCacheSaveInterval = 50;
+
         public EpicGamesApi(IAnsiConsole ansiConsole, HttpClientFactory httpClientFactory)
         {
             _ansiConsole = ansiConsole;
@@ -116,11 +123,19 @@
             if (File.Exists(MetadataCachePath))
             {
                 var allText = await File.ReadAllTextAsync(MetadataCachePath, cancellationToken);
-                metadataDictionary = JsonSerializer.Deserialize(allText, SerializationContext.Default.DictionaryStringAppMetadataResponse);
+                // A cache file holding literal 'null' - a truncated write, or one an older build left
+                // behind - deserializes to null. Starting from an empty dictionary rebuilds it on this
+                // run, instead of throwing on every call forever because the file is only ever rewritten
+                // after a successful load. [16]
+                metadataDictionary = JsonSerializer.Deserialize(allText, SerializationContext.Default.DictionaryStringAppMetadataResponse)
+                                     ?? new Dictionary<string, AppMetadataResponse>();
             }
 
-            // Determine which apps don't already have their metadata loaded
-            List<Asset> appsMissingMetadata = apps.Where(e => !metadataDictionary.ContainsKey(e.AppId))
+            // Determine which apps don't already have their metadata loaded. A cache entry written
+            // before artwork support existed deserializes with KeyImages == null, so it is treated
+            // the same as a missing entry and re-requested - otherwise every already-cached app on
+            // an existing install would keep its art-less cache forever.
+            List<Asset> appsMissingMetadata = GetAppsMissingMetadata(apps, metadataDictionary)
                                                       .OrderBy(e => e.AppId)
                                                       .ToList();
 
@@ -133,23 +148,107 @@
             await _ansiConsole.CreateSpectreProgress().StartAsync(async context =>
             {
                 var progressTask = context.AddTask("Loading app metadata...", maxValue: appsMissingMetadata.Count);
+                var unsavedApps = 0;
 
-                foreach (var app in appsMissingMetadata)
+                try
                 {
-                    cancellationToken.ThrowIfCancellationRequested();
-                    var metadata = await GetSingleAppMetadataAsync(app, cancellationToken);
-                    metadataDictionary.Add(app.AppId, metadata);
-                    progressTask.Increment(1);
+                    foreach (var app in appsMissingMetadata)
+                    {
+                        cancellationToken.ThrowIfCancellationRequested();
+
+                        AppMetadataResponse metadata;
+                        try
+                        {
+                            metadata = await GetSingleAppMetadataAsync(app, cancellationToken);
+                        }
+                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                        {
+                            throw;
+                        }
+                        catch (Exception e)
+                        {
+                            // One delisted or region-locked catalog item must not end the run for every
+                            // other app in the library. [15]
+                            FileLogger.LogExceptionNoStackTrace($"Metadata request for app {app.AppId}", e);
+                            progressTask.Increment(1);
+                            continue;
+                        }
+
+                        // Epic answers with no usable entry for some catalog items, so there is nothing
+                        // to record for this app. [15]
+                        if (metadata == null)
+                        {
+                            progressTask.Increment(1);
+                            continue;
+                        }
+
+                        // Epic omits keyImages entirely for some catalog items. Storing an empty list rather
+                        // than null records that the app was checked and has no artwork, so it stops matching
+                        // the cache-miss rule below instead of being re-requested on every future run.
+                        metadata.KeyImages ??= new List<KeyImage>();
+                        // Indexer, not .Add: an app can already be a key here with a stale (no-artwork)
+                        // cached value, and this re-fetch is meant to replace that entry, not collide with it.
+                        metadataDictionary[app.AppId] = metadata;
+                        progressTask.Increment(1);
+
+                        unsavedApps++;
+                        if (unsavedApps >= MetadataCacheSaveInterval)
+                        {
+                            await SaveMetadataCacheAsync(metadataDictionary);
+                            unsavedApps = 0;
+                        }
+                    }
+                }
+                finally
+                {
+                    // A cancel or a failure part way through has to keep the apps already fetched.
+                    // Without this a library too big to finish inside one attempt refetches from zero
+                    // every retry and never converges. [13]
+                    if (unsavedApps > 0)
+                    {
+                        try
+                        {
+                            await SaveMetadataCacheAsync(metadataDictionary);
+                        }
+                        catch (Exception e)
+                        {
+                            // Best effort while unwinding: a write failure here must not replace the
+                            // exception that is already on its way out.
+                            FileLogger.LogExceptionNoStackTrace("Writing the app metadata cache", e);
+                        }
+                    }
                 }
             });
 
             _ansiConsole.LogMarkupLine($"Loaded new app metadata for {LightYellow(appsMissingMetadata.Count)} apps");
 
-            // Serialize new metadata
-            var serialized = JsonSerializer.Serialize(metadataDictionary, SerializationContext.Default.DictionaryStringAppMetadataResponse);
-            await File.WriteAllTextAsync(MetadataCachePath, serialized, cancellationToken);
-
             return metadataDictionary;
+        }
+
+        /// <summary>
+        /// Writes the app metadata cache to disk. Deliberately ignores the run's cancellation token:
+        /// this also runs while unwinding a cancelled run, and a cancelled token would throw away the
+        /// very progress the write exists to keep.
+        /// </summary>
+        private async Task SaveMetadataCacheAsync(Dictionary<string, AppMetadataResponse> metadataDictionary)
+        {
+            var serialized = JsonSerializer.Serialize(metadataDictionary, SerializationContext.Default.DictionaryStringAppMetadataResponse);
+            await File.WriteAllTextAsync(MetadataCachePath, serialized, CancellationToken.None);
+        }
+
+        /// <summary>
+        /// An app needs its metadata (re-)requested when it isn't cached at all, or when the cached
+        /// entry has no artwork - which is what every entry written before artwork support existed
+        /// looks like once deserialized. Pulled out of <see cref="LoadAppMetadataAsync"/> so the
+        /// cache-miss rule can be tested without a disk or a network call.
+        /// </summary>
+        internal static IEnumerable<Asset> GetAppsMissingMetadata(
+            List<Asset> apps,
+            Dictionary<string, AppMetadataResponse> cachedMetadata)
+        {
+            // A null cached entry counts as a miss too - that is what an older build wrote whenever Epic
+            // answered with no usable metadata for an app. [16]
+            return apps.Where(app => !cachedMetadata.TryGetValue(app.AppId, out var cached) || cached?.KeyImages == null);
         }
 
         /// <summary>
@@ -192,7 +291,10 @@
                     cancellationToken);
             }
 
-            return appMetadata.Values.First();
+            // Epic returns an empty body, or a null entry, for catalog items that are delisted or not
+            // sold in this region. Handing back null lets the caller skip that one app instead of the
+            // whole batch dying on it. [15]
+            return appMetadata?.Values.FirstOrDefault();
         }
 
         //TODO comment

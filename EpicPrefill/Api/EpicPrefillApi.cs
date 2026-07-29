@@ -91,7 +91,8 @@ public sealed class EpicPrefillApi : IDisposable
             var result = apps.Select(a => new OwnedGame
             {
                 AppId = a.AppId,
-                Name = a.Title
+                Name = a.Title,
+                KeyImages = a.KeyImages
             }).ToList();
 
             _progress.OnOperationCompleted("Fetching owned games", timer.Elapsed);
@@ -556,6 +557,7 @@ public class OwnedGame
 {
     public string AppId { get; init; } = string.Empty;
     public string Name { get; init; } = string.Empty;
+    public List<KeyImage>? KeyImages { get; init; }
 }
 
 public class CacheStatusResult
