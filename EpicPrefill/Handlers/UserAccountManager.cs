@@ -19,7 +19,10 @@ namespace EpicPrefill.Handlers
         private const string BasicUsername = "34a02cf8f4414e29b15921876da36f9a";
         private const string BasicPassword = "daafbccc737745039dffe53d94fc76cf";
 
-        private const int MaxRetries = 3;
+        // Two attempts is what the retry is actually for: one with the stored token, and one more after a
+        // bad request clears it.  Every attempt goes to the same host with no delay between them, so a
+        // third only adds another full request timeout when that host is down.
+        private const int MaxRetries = 2;
 
         //TODO this should probably be private
         public OauthToken OauthToken { get; set; }

@@ -4,7 +4,16 @@ namespace EpicPrefill.Handlers
 {
     public sealed class DownloadHandler : IDisposable
     {
-        private const int MaxDownloadRetries = 2;
+        // Every retry goes back to the same cache address, so a second one buys nothing when that address
+        // has stopped answering and only adds another pass over every failed chunk.
+        private const int MaxDownloadRetries = 1;
+
+        /// <summary>
+        /// How many chunks may fail with nothing at all transferred before the rest of the queue is
+        /// abandoned.  Two full waves, so that a queue whose first wave fails and then recovers is still
+        /// downloaded; a single wave would give up on a download that was about to work.
+        /// </summary>
+        private static int FailuresBeforeCacheIsDown => AppConfig.MaxConcurrentRequests * 2;
 
         private readonly IAnsiConsole _ansiConsole;
         private readonly HttpClient _client;
@@ -21,6 +30,21 @@ namespace EpicPrefill.Handlers
             _progress = progress ?? NullProgress.Instance;
 
             _client = new HttpClient();
+            // Bounds the wait for the reply headers, which is all HttpClient.Timeout covers under
+            // ResponseHeadersRead.  Left at the 100 second default this was the largest part of the time
+            // spent failing against a cache that has gone quiet.
+            _client.Timeout = AppConfig.DefaultRequestTimeout;
+            _client.DefaultRequestHeaders.Add("User-Agent", AppConfig.DefaultUserAgent);
+        }
+
+        internal DownloadHandler(IAnsiConsole ansiConsole, HttpMessageHandler handler, string lancacheAddress, IPrefillProgress? progress = null)
+        {
+            _ansiConsole = ansiConsole;
+            _progress = progress ?? NullProgress.Instance;
+            _lancacheAddress = lancacheAddress;
+
+            _client = new HttpClient(handler, disposeHandler: false);
+            _client.Timeout = AppConfig.DefaultRequestTimeout;
             _client.DefaultRequestHeaders.Add("User-Agent", AppConfig.DefaultUserAgent);
         }
 
@@ -86,6 +110,11 @@ namespace EpicPrefill.Handlers
             var progressTask = ctx.AddTask(taskTitle, new ProgressTaskSettings { MaxValue = requestTotalSize });
 
             var failedRequests = new ConcurrentBag<QueuedRequest>();
+            // Counted separately from bytesDownloaded, which is incremented for failed chunks too because it
+            // drives the progress bar, and from failedRequests, whose Count walks the whole bag.
+            var succeededCount = 0;
+            var failedCount = 0;
+            var cacheIsDown = 0;
             long bytesDownloaded = 0;
             var startTime = DateTime.UtcNow;
             long lastProgressReportTicks = 0;
@@ -96,6 +125,12 @@ namespace EpicPrefill.Handlers
 
             await Parallel.ForEachAsync(requestsToDownload, new ParallelOptions { MaxDegreeOfParallelism = AppConfig.MaxConcurrentRequests, CancellationToken = cancellationToken }, async (chunk, ct) =>
             {
+                if (Volatile.Read(ref cacheIsDown) != 0)
+                {
+                    failedRequests.Add(chunk);
+                    return;
+                }
+
                 try
                 {
                     var url = Path.Join($"http://{_lancacheAddress}", chunk.DownloadUrl);
@@ -107,15 +142,32 @@ namespace EpicPrefill.Handlers
                     using var requestMessage = new HttpRequestMessage(HttpMethod.Get, url);
                     requestMessage.Headers.Host = upstreamCdn.Host;
 
-                    using var response = await _client.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, ct);
-                    using Stream responseStream = await response.Content.ReadAsStreamAsync(ct);
+                    // ResponseHeadersRead returns once the headers arrive, which leaves every read below
+                    // outside HttpClient.Timeout.  The clock is restarted after each read, so a slow but
+                    // living connection is left alone and only one that stops sending entirely is cut off.
+                    using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    using var response = await _client.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, stallCts.Token);
+                    using Stream responseStream = await response.Content.ReadAsStreamAsync(stallCts.Token);
                     response.EnsureSuccessStatusCode();
 
                     // Don't save the data anywhere, so we don't have to waste time writing it to disk.
                     var buffer = new byte[4096];
-                    while (await responseStream.ReadAsync(buffer, ct) != 0)
+                    try
                     {
+                        stallCts.CancelAfter(AppConfig.DefaultRequestTimeout);
+                        while (await responseStream.ReadAsync(buffer, stallCts.Token) != 0)
+                        {
+                            stallCts.CancelAfter(AppConfig.DefaultRequestTimeout);
+                        }
                     }
+                    catch (OperationCanceledException) when (!ct.IsCancellationRequested)
+                    {
+                        throw new TimeoutException(
+                            $"{upstreamCdn.Host} stopped sending data for {AppConfig.DefaultRequestTimeout.TotalSeconds} seconds partway through a chunk.  " +
+                            "The cache or its upstream CDN may be unreachable.");
+                    }
+
+                    Interlocked.Increment(ref succeededCount);
                 }
                 catch (OperationCanceledException) when (ct.IsCancellationRequested)
                 {
@@ -125,8 +177,18 @@ namespace EpicPrefill.Handlers
                 catch (Exception e)
                 {
                     failedRequests.Add(chunk);
+                    Interlocked.Increment(ref failedCount);
                     FileLogger.LogExceptionNoStackTrace($"Request {chunk.DownloadUrl}", e);
                 }
+
+                // A source that has handed back nothing at all after this many failures is not going to
+                // start working further down the queue, and walking the rest of it costs one timeout per
+                // wave.  Any single success means the source works and turns this off for good.
+                if (Volatile.Read(ref succeededCount) == 0 && Volatile.Read(ref failedCount) >= FailuresBeforeCacheIsDown)
+                {
+                    Volatile.Write(ref cacheIsDown, 1);
+                }
+
                 progressTask.Increment(chunk.DownloadSizeBytes);
 
                 // Report progress via IPrefillProgress (throttled)
@@ -153,6 +215,16 @@ namespace EpicPrefill.Handlers
                     }
                 }
             });
+
+            // Thrown out here rather than from inside the loop body: the body's own catch would swallow it,
+            // and concurrent throws arrive wrapped in an AggregateException with the message buried.
+            if (Volatile.Read(ref cacheIsDown) != 0)
+            {
+                throw new TimeoutException(
+                    $"Gave up downloading from {_lancacheAddress}.  The first {FailuresBeforeCacheIsDown} requests for {upstreamCdn.Host} all failed and not one byte arrived, " +
+                    "so the rest of the queue was abandoned rather than waiting on every remaining chunk.  " +
+                    "Check that the cache is running and that it can reach the internet.");
+            }
 
             // Making sure the progress bar is always set to its max value, in-case some unexpected error leaves the progress bar showing as unfinished
             progressTask.Increment(progressTask.MaxValue);

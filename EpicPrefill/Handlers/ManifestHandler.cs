@@ -42,7 +42,21 @@
                     cancellationToken);
                 response.EnsureSuccessStatusCode();
 
-                responseAsBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken);
+                // Sent with ResponseHeadersRead, so the body read sits outside HttpClient.Timeout and needs
+                // its own bound.  Without it a CDN edge that goes quiet after the headers stalls the
+                // prefill before a single chunk is queued.
+                try
+                {
+                    responseAsBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken)
+                        .WaitAsync(AppConfig.DefaultRequestTimeout, cancellationToken);
+                }
+                catch (TimeoutException)
+                {
+                    throw new TimeoutException(
+                        $"{manifestDownloadUrl.ManifestDownloadUri.Host} stopped sending the manifest for {AppConfig.DefaultRequestTimeout.TotalSeconds} seconds.  " +
+                        "The download cannot start until the manifest arrives, so check that the cache and its upstream CDN are reachable.");
+                }
+
                 // Cache to disk
                 await File.WriteAllBytesAsync(cachedFileName, responseAsBytes, cancellationToken);
 

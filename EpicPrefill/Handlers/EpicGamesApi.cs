@@ -30,6 +30,26 @@
         }
 
         /// <summary>
+        /// Reads a response body under its own time limit.  These requests are sent with
+        /// ResponseHeadersRead, which returns as soon as the headers arrive and leaves every read of the
+        /// body outside HttpClient.Timeout, so a service that answers with headers and then goes quiet
+        /// would stall the prefill indefinitely without this bound.
+        /// </summary>
+        private static async Task<string> ReadBodyAsync(HttpResponseMessage response, string host, CancellationToken cancellationToken)
+        {
+            try
+            {
+                return await response.Content.ReadAsStringAsync(cancellationToken).WaitAsync(AppConfig.DefaultRequestTimeout, cancellationToken);
+            }
+            catch (TimeoutException)
+            {
+                throw new TimeoutException(
+                    $"{host} sent a reply header and then stopped sending the body for {AppConfig.DefaultRequestTimeout.TotalSeconds} seconds.  " +
+                    "The Epic service may be having an outage, so wait and try again.");
+            }
+        }
+
+        /// <summary>
         /// Gets a list of all owned apps for the currently logged in account.
         /// </summary>
         /// <returns></returns>
@@ -52,7 +72,7 @@
             response.EnsureSuccessStatusCode();
 
             // Read and deserialize
-            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            var responseContent = await ReadBodyAsync(response, LauncherHost, cancellationToken);
             var ownedApps = JsonSerializer.Deserialize(responseContent, SerializationContext.Default.ListAsset);
 
             // Dumping out the raw json if -debug is enabled
@@ -94,7 +114,7 @@
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
             response.EnsureSuccessStatusCode();
 
-            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            var responseContent = await ReadBodyAsync(response, LibraryHost, cancellationToken);
             var playtimes = JsonSerializer.Deserialize(responseContent, SerializationContext.Default.ListPlaytimeEntry);
 
             if (AppConfig.DebugLogs)
@@ -279,7 +299,7 @@
                 cancellationToken);
             response.EnsureSuccessStatusCode();
 
-            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            var responseContent = await ReadBodyAsync(response, CatalogHost, cancellationToken);
             var appMetadata = JsonSerializer.Deserialize(responseContent, SerializationContext.Default.DictionaryStringAppMetadataResponse);
 
             // Dumping out the raw json if -debug is enabled
@@ -313,7 +333,7 @@
                 cancellationToken);
             response.EnsureSuccessStatusCode();
 
-            var responseContent = await response.Content.ReadAsStringAsync(cancellationToken);
+            var responseContent = await ReadBodyAsync(response, LauncherHost, cancellationToken);
             ManifestResponse deserialized = JsonSerializer.Deserialize(responseContent, SerializationContext.Default.ManifestResponse);
 
             // Dumping out the raw json if -debug is enabled
