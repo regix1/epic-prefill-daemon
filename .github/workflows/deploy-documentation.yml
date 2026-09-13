@@ -12,7 +12,7 @@ jobs:
     container:
       image: python:3.11
     steps:
-      - uses: actions/checkout@v2
+      - uses: actions/checkout@v6
       - run: git config --global --add safe.directory "*";
       - run: >
           cd docs;
