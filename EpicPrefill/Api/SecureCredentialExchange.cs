@@ -145,7 +145,9 @@ public sealed class SecureCredentialExchange : IDisposable
             var tag = Convert.FromBase64String(response.Tag);
 
             var plaintext = new byte[ciphertext.Length];
+#pragma warning disable CA5390 // The AES key is derived from this exchange's ECDH secret and random challenge.
             using var aesGcm = new AesGcm(aesKey, 16);
+#pragma warning restore CA5390
             aesGcm.Decrypt(nonce, ciphertext, tag, plaintext);
 
             var credential = Encoding.UTF8.GetString(plaintext);

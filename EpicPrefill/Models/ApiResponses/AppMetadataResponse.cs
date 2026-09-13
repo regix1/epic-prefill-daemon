@@ -10,7 +10,9 @@ namespace EpicPrefill.Models.ApiResponses
         // oversized entry never becomes the one that ships. Null whenever Epic returned no artwork
         // at all for the app, so every read has to allow for that.
         [JsonPropertyName("keyImages")]
+#pragma warning disable CA2227 // System.Text.Json replaces this collection when deserializing Epic responses.
         public List<KeyImage> KeyImages { get; set; }
+#pragma warning restore CA2227
 
         public override string ToString()
         {

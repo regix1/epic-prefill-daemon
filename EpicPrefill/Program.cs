@@ -1,5 +1,6 @@
 using EpicPrefill.Api;
 using EpicPrefill.Settings;
+using Spectre.Console;
 
 namespace EpicPrefill
 {
@@ -11,7 +12,7 @@ namespace EpicPrefill
             {
                 ParseHiddenFlags();
 
-                Console.WriteLine($"EpicPrefill daemon v{ThisAssembly.Info.InformationalVersion}");
+                AnsiConsole.WriteLine($"EpicPrefill daemon v{ThisAssembly.Info.InformationalVersion}");
 
                 var tcpPortEnv = Environment.GetEnvironmentVariable("PREFILL_TCP_PORT");
                 var useTcp = int.TryParse(tcpPortEnv, out var tcpPort) && tcpPort > 0;
@@ -25,8 +26,14 @@ namespace EpicPrefill
                 Console.CancelKeyPress += (_, e) =>
                 {
                     e.Cancel = true;
-                    Console.WriteLine("\nShutdown signal received...");
+                    AnsiConsole.WriteLine("\nShutdown signal received...");
+#pragma warning disable AsyncFixer02 // Console signal callbacks cannot await asynchronous cancellation.
+#pragma warning disable CA1849
+#pragma warning disable VSTHRD103
                     cts.Cancel();
+#pragma warning restore VSTHRD103
+#pragma warning restore CA1849
+#pragma warning restore AsyncFixer02
                 };
 
                 if (useTcp)
@@ -46,10 +53,10 @@ namespace EpicPrefill
             }
             catch (Exception e)
             {
-                Console.WriteLine($"Fatal error: {e.Message}");
+                AnsiConsole.WriteLine($"Fatal error: {e.Message}");
                 if (AppConfig.DebugLogs)
                 {
-                    Console.WriteLine(e.StackTrace);
+                    AnsiConsole.WriteLine(e.StackTrace ?? string.Empty);
                 }
                 return 1;
             }
@@ -61,27 +68,27 @@ namespace EpicPrefill
 
             if (args.Any(e => e.Contains("--debug")))
             {
-                Console.WriteLine($"Using --debug flag. Displaying debug only logging...");
-                Console.WriteLine($"Additional debugging files will be output to {AppConfig.DebugOutputDir}");
+                AnsiConsole.WriteLine("Using --debug flag. Displaying debug only logging...");
+                AnsiConsole.WriteLine($"Additional debugging files will be output to {AppConfig.DebugOutputDir}");
                 AppConfig.DebugLogs = true;
             }
 
             if (args.Any(e => e.Contains("--no-download")))
             {
-                Console.WriteLine($"Using --no-download flag. Will skip downloading chunks...");
+                AnsiConsole.WriteLine("Using --no-download flag. Will skip downloading chunks...");
                 AppConfig.SkipDownloads = true;
             }
 
             if (args.Any(e => e.Contains("--nocache")) || args.Any(e => e.Contains("--no-cache")))
             {
-                Console.WriteLine($"Using --nocache flag. Will always re-download manifests...");
+                AnsiConsole.WriteLine("Using --nocache flag. Will always re-download manifests...");
                 AppConfig.NoLocalCache = true;
             }
 
             if (AppConfig.DebugLogs || AppConfig.SkipDownloads || AppConfig.NoLocalCache)
             {
-                Console.WriteLine();
-                Console.WriteLine(new string('─', 60));
+                AnsiConsole.WriteLine();
+                AnsiConsole.WriteLine(new string('─', 60));
             }
         }
     }

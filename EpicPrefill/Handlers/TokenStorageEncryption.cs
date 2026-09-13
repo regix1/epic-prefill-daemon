@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 namespace EpicPrefill.Handlers
 {
     /// <summary>
@@ -254,3 +256,5 @@ namespace EpicPrefill.Handlers
         }
     }
 }
+
+#nullable restore annotations

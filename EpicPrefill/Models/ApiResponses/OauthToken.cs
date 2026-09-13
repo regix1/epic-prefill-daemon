@@ -1,3 +1,5 @@
+#nullable enable annotations
+
 namespace EpicPrefill.Models.ApiResponses
 {
     //TODO document and figure out which fields arent needed
@@ -22,3 +24,5 @@ namespace EpicPrefill.Models.ApiResponses
         public string? AccountId { get; set; }
     }
 }
+
+#nullable restore annotations
