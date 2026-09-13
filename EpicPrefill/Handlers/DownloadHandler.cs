@@ -2,6 +2,7 @@ using System.Threading;
 
 namespace EpicPrefill.Handlers
 {
+#nullable enable annotations
     public sealed class DownloadHandler : IDisposable
     {
         // Every retry goes back to the same cache address, so a second one buys nothing when that address
@@ -18,6 +19,9 @@ namespace EpicPrefill.Handlers
         private readonly IAnsiConsole _ansiConsole;
         private readonly HttpClient _client;
         private readonly IPrefillProgress _progress;
+        private long _bytesTransferred;
+        public long BytesTransferred => Interlocked.Read(ref _bytesTransferred);
+        private int MaxConcurrentRequests => PrefillRun.Current?.Options.MaxConcurrency ?? AppConfig.MaxConcurrentRequests;
 
         /// <summary>
         /// The URL/IP Address where the Lancache has been detected.
@@ -58,6 +62,7 @@ namespace EpicPrefill.Handlers
         /// <returns>True if all downloads succeeded.  False if downloads failed 3 times.</returns>
         public async Task<bool> DownloadQueuedChunksAsync(List<QueuedRequest> queuedRequests, ManifestUrl manifestUrl, string? appId = null, string? appName = null, CancellationToken cancellationToken = default)
         {
+            Interlocked.Exchange(ref _bytesTransferred, 0);
             if (AppConfig.SkipDownloads)
             {
                 return true;
@@ -123,7 +128,7 @@ namespace EpicPrefill.Handlers
             var progressAppId = appId ?? upstreamCdn.Host;
             var progressAppName = appName ?? upstreamCdn.Host;
 
-            await Parallel.ForEachAsync(requestsToDownload, new ParallelOptions { MaxDegreeOfParallelism = AppConfig.MaxConcurrentRequests, CancellationToken = cancellationToken }, async (chunk, ct) =>
+            await Parallel.ForEachAsync(requestsToDownload, new ParallelOptions { MaxDegreeOfParallelism = MaxConcurrentRequests, CancellationToken = cancellationToken }, async (chunk, ct) =>
             {
                 if (Volatile.Read(ref cacheIsDown) != 0)
                 {
@@ -146,6 +151,7 @@ namespace EpicPrefill.Handlers
                     // outside HttpClient.Timeout.  The clock is restarted after each read, so a slow but
                     // living connection is left alone and only one that stops sending entirely is cut off.
                     using var stallCts = CancellationTokenSource.CreateLinkedTokenSource(ct);
+                    using var permit = PrefillRun.Current == null ? null : await PrefillRun.Current.AcquireAsync(ct);
                     using var response = await _client.SendAsync(requestMessage, HttpCompletionOption.ResponseHeadersRead, stallCts.Token);
                     using Stream responseStream = await response.Content.ReadAsStreamAsync(stallCts.Token);
                     response.EnsureSuccessStatusCode();
@@ -155,9 +161,17 @@ namespace EpicPrefill.Handlers
                     try
                     {
                         stallCts.CancelAfter(AppConfig.DefaultRequestTimeout);
-                        while (await responseStream.ReadAsync(buffer, stallCts.Token) != 0)
+                        long chunkBytes = 0;
+                        int read;
+                        while ((read = await responseStream.ReadAsync(buffer, stallCts.Token)) != 0)
                         {
+                            Interlocked.Add(ref _bytesTransferred, read);
+                            chunkBytes += read;
                             stallCts.CancelAfter(AppConfig.DefaultRequestTimeout);
+                        }
+                        if (chunk.DownloadSizeBytes > 0 && chunkBytes != (long)chunk.DownloadSizeBytes)
+                        {
+                            throw new IOException("The chunk response did not match its expected length.");
                         }
                     }
                     catch (OperationCanceledException) when (!ct.IsCancellationRequested)
@@ -180,6 +194,17 @@ namespace EpicPrefill.Handlers
                     Interlocked.Increment(ref failedCount);
                     FileLogger.LogExceptionNoStackTrace($"Request {chunk.DownloadUrl}", e);
                 }
+                finally
+                {
+                    _progress.OnDownloadProgress(new DownloadProgressInfo
+                    {
+                        AppId = progressAppId,
+                        AppName = progressAppName,
+                        TotalBytes = (long)requestTotalSize,
+                        BytesDownloaded = BytesTransferred,
+                        Elapsed = DateTime.UtcNow - startTime
+                    });
+                }
 
                 // A source that has handed back nothing at all after this many failures is not going to
                 // start working further down the queue, and walking the rest of it costs one timeout per
@@ -192,7 +217,8 @@ namespace EpicPrefill.Handlers
                 progressTask.Increment(chunk.DownloadSizeBytes);
 
                 // Report progress via IPrefillProgress (throttled)
-                var downloaded = Interlocked.Add(ref bytesDownloaded, (long)chunk.DownloadSizeBytes);
+                var downloaded = BytesTransferred;
+                Interlocked.Exchange(ref bytesDownloaded, downloaded);
                 var now = DateTime.UtcNow;
                 var nowTicks = now.Ticks;
                 long prevTicks = Volatile.Read(ref lastProgressReportTicks);
@@ -237,7 +263,7 @@ namespace EpicPrefill.Handlers
                 AppId = progressAppId,
                 AppName = progressAppName,
                 TotalBytes = (long)requestTotalSize,
-                BytesDownloaded = (long)requestTotalSize,
+                BytesDownloaded = BytesTransferred,
                 BytesPerSecond = finalBytesPerSecond,
                 Elapsed = finalElapsed
             });

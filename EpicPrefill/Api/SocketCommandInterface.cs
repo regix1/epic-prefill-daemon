@@ -15,13 +15,19 @@ public sealed class SocketCommandInterface : IDisposable
     private readonly SocketAuthProvider _authProvider;
     private readonly SocketProgress _progress;
     private readonly CancellationTokenSource _cts = new();
-    private readonly OwnedOperationCoordinator _prefillOperation = new();
+    private readonly PrefillProtocol _protocol = PrefillProtocol.FromEnvironment(AppConfig.MaxConcurrentRequests);
+    private readonly OwnedOperationCoordinator _prefillOperation;
+    private readonly RequestBudget _budget;
+    private readonly ItemClaims _claims = new();
+    private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PrefillRun> _runs = new(StringComparer.Ordinal);
+    private readonly Func<PrefillOptions, PrefillRun?, CancellationToken, Task<PrefillResult>>? _execute;
     private CancellationTokenSource? _loginCts;
     private EpicPrefillApi? _api;
     private Task? _loginTask;
     private bool _isLoggedIn;
     private bool _isLoggingIn;
     private bool _disposed;
+    private int _authLost;
 
     // Bumped by logout (and cancel-login) so a login task that is still unwinding (or already
     // orphaned by a cancellation that never got observed) can tell it has been superseded and must
@@ -33,12 +39,16 @@ public sealed class SocketCommandInterface : IDisposable
     // How long logout waits for an in-flight login task to unwind before force-cleaning up
     // anyway. Logout must never hang on a stuck login.
     private static readonly TimeSpan LogoutLoginTaskTimeout = TimeSpan.FromSeconds(8);
+    private static readonly string[] Presets = { "all", "recent", "top" };
 
     private static readonly HashSet<string> PreLoginCommands = new(StringComparer.OrdinalIgnoreCase)
     {
         "login",
         "logout",
         "status",
+        "get-operation",
+        "cancel-prefill",
+        "shutdown",
         "cancel-login",
         "provide-credential",
         "provide-auto-login"
@@ -46,6 +56,8 @@ public sealed class SocketCommandInterface : IDisposable
 
     public SocketCommandInterface(string socketPath)
     {
+        _prefillOperation = new OwnedOperationCoordinator(_protocol.MaxConcurrentRuns);
+        _budget = new RequestBudget(_protocol.MaxConcurrentRequests);
         _progress = new SocketProgress();
         _socketServer = new SocketServer(socketPath, _progress);
         _authProvider = new SocketAuthProvider(_socketServer, _progress);
@@ -57,6 +69,8 @@ public sealed class SocketCommandInterface : IDisposable
 
     public SocketCommandInterface(int tcpPort)
     {
+        _prefillOperation = new OwnedOperationCoordinator(_protocol.MaxConcurrentRuns);
+        _budget = new RequestBudget(_protocol.MaxConcurrentRequests);
         _progress = new SocketProgress();
         _socketServer = new SocketServer(tcpPort, _progress);
         _authProvider = new SocketAuthProvider(_socketServer, _progress);
@@ -64,6 +78,13 @@ public sealed class SocketCommandInterface : IDisposable
         _socketServer.CommandLaneSelector = SelectCommandLane;
 
         _progress.SocketServer = _socketServer;
+    }
+
+    internal SocketCommandInterface(int tcpPort, Func<PrefillOptions, PrefillRun?, CancellationToken, Task<PrefillResult>> execute)
+        : this(tcpPort)
+    {
+        _execute = execute;
+        _isLoggedIn = true;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -80,7 +101,7 @@ public sealed class SocketCommandInterface : IDisposable
     public async Task StopAsync()
     {
         await _cts.CancelAsync();
-        await _prefillOperation.CancelAndWaitAsync();
+        await _prefillOperation.CancelAllAndWaitAsync();
         await _socketServer.StopAsync();
         _progress.OnLog(LogLevel.Info, "Socket command interface stopped");
     }
@@ -112,6 +133,7 @@ public sealed class SocketCommandInterface : IDisposable
                 "cancel-prefill" => await HandleCancelPrefillAsync(request, cancellationToken),
                 "provide-credential" => HandleProvideCredential(request),
                 "status" => HandleStatus(request),
+                "get-operation" => HandleGetOperation(request),
                 "get-owned-games" => await HandleGetOwnedGamesAsync(request, cancellationToken),
                 "get-cdn-info" => await HandleGetCdnInfoAsync(request, cancellationToken),
                 "get-selected-apps" => HandleGetSelectedApps(request),
@@ -151,7 +173,7 @@ public sealed class SocketCommandInterface : IDisposable
     private static DaemonCommandLane SelectCommandLane(CommandRequest request)
         => request.Type.ToLowerInvariant() switch
         {
-            "cancel-login" or "cancel-prefill" or "status" or "shutdown"
+            "cancel-login" or "cancel-prefill" or "status" or "shutdown" or "get-operation"
                 => DaemonCommandLane.Control,
             "get-owned-games" or "get-cdn-info" or "get-selected-apps" or
             "get-selected-apps-status" or "get-cache-info" or "check-cache-status"
@@ -161,12 +183,19 @@ public sealed class SocketCommandInterface : IDisposable
 
     private Task<CommandResponse> HandleLoginAsync(CommandRequest request, CancellationToken cancellationToken)
     {
+        if (_prefillOperation.IsRunning && !_isLoggedIn)
+        {
+            return Task.FromResult(new CommandResponse { Id = request.Id, Success = false, Error = "Account work is still draining" });
+        }
         if (_isLoggedIn)
         {
             _progress.OnLog(LogLevel.Info, "Already logged in");
             return Task.FromResult(new CommandResponse
             {
-                Id = request.Id, Success = true, Message = "Already logged in", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = true,
+                Message = "Already logged in",
+                CompletedAt = DateTime.UtcNow
             });
         }
 
@@ -175,7 +204,10 @@ public sealed class SocketCommandInterface : IDisposable
             _progress.OnLog(LogLevel.Info, "Login already in progress");
             return Task.FromResult(new CommandResponse
             {
-                Id = request.Id, Success = true, Message = "Login already in progress", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = true,
+                Message = "Login already in progress",
+                CompletedAt = DateTime.UtcNow
             });
         }
 
@@ -209,6 +241,7 @@ public sealed class SocketCommandInterface : IDisposable
                     return;
                 }
 
+                Interlocked.Exchange(ref _authLost, 0);
                 _isLoggedIn = true;
                 _isLoggingIn = false;
                 _progress.OnLog(LogLevel.Info, "Login successful - commands now available");
@@ -251,7 +284,10 @@ public sealed class SocketCommandInterface : IDisposable
 
         return Task.FromResult(new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Login started - awaiting credentials", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Login started - awaiting credentials",
+            CompletedAt = DateTime.UtcNow
         });
     }
 
@@ -263,11 +299,18 @@ public sealed class SocketCommandInterface : IDisposable
     /// </summary>
     private CommandResponse HandleProvideAutoLogin(CommandRequest request)
     {
+        if (_prefillOperation.IsRunning && !_isLoggedIn)
+        {
+            return new CommandResponse { Id = request.Id, Success = false, Error = "Account work is still draining" };
+        }
         if (_isLoggedIn)
         {
             return new CommandResponse
             {
-                Id = request.Id, Success = true, Message = "Already logged in", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = true,
+                Message = "Already logged in",
+                CompletedAt = DateTime.UtcNow
             };
         }
 
@@ -275,7 +318,10 @@ public sealed class SocketCommandInterface : IDisposable
         {
             return new CommandResponse
             {
-                Id = request.Id, Success = true, Message = "Login already in progress", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = true,
+                Message = "Login already in progress",
+                CompletedAt = DateTime.UtcNow
             };
         }
 
@@ -311,6 +357,7 @@ public sealed class SocketCommandInterface : IDisposable
                     return;
                 }
 
+                Interlocked.Exchange(ref _authLost, 0);
                 _isLoggedIn = true;
                 _isLoggingIn = false;
                 _progress.OnLog(LogLevel.Info, "Headless login successful - commands now available");
@@ -353,7 +400,10 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Headless login started - awaiting refresh token", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Headless login started - awaiting refresh token",
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -387,7 +437,7 @@ public sealed class SocketCommandInterface : IDisposable
             }
         }
 
-        await _prefillOperation.CancelAndWaitAsync(cancellationToken);
+        await _prefillOperation.CancelAllAndWaitAsync(cancellationToken);
         CleanupApiInstance();
 
         // Wipe the persisted account file AND its storage.key so the refresh token cannot linger
@@ -401,12 +451,19 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Logged out successfully", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Logged out successfully",
+            CompletedAt = DateTime.UtcNow
         };
     }
 
     private async Task<CommandResponse> HandleCancelLoginAsync(CommandRequest request)
     {
+        if (!_isLoggingIn)
+        {
+            return new CommandResponse { Id = request.Id, Success = true, Message = "No login in progress" };
+        }
         _progress.OnLog(LogLevel.Info, "Cancelling login...");
 
         // Bump the generation first, same as logout: a login task that races past this
@@ -427,7 +484,10 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Login cancelled", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Login cancelled",
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -435,11 +495,26 @@ public sealed class SocketCommandInterface : IDisposable
         CommandRequest request,
         CancellationToken cancellationToken)
     {
+        if (request.Parameters?.TryGetValue("operationId", out var operationId) == true)
+        {
+            _protocol.ValidateInstance(request.Parameters.GetValueOrDefault("daemonInstanceId") ?? "");
+            var snapshot = _prefillOperation.Cancel(operationId, _protocol.DaemonInstanceId);
+            return new CommandResponse
+            {
+                Id = request.Id,
+                Success = snapshot != null,
+                Data = snapshot,
+                Error = snapshot == null ? "operation-not-found" : null
+            };
+        }
         if (!_prefillOperation.IsRunning)
         {
             return new CommandResponse
             {
-                Id = request.Id, Success = true, Message = "No prefill in progress", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = true,
+                Message = "No prefill in progress",
+                CompletedAt = DateTime.UtcNow
             };
         }
 
@@ -448,7 +523,10 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Prefill cancelled", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Prefill cancelled",
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -465,7 +543,10 @@ public sealed class SocketCommandInterface : IDisposable
         {
             return new CommandResponse
             {
-                Id = request.Id, Success = false, Error = "Missing required credential parameters", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = false,
+                Error = "Missing required credential parameters",
+                CompletedAt = DateTime.UtcNow
             };
         }
 
@@ -495,7 +576,10 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Credential received", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Credential received",
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -510,6 +594,16 @@ public sealed class SocketCommandInterface : IDisposable
             Success = true,
             Data = new StatusData
             {
+                ProtocolVersion = PrefillProtocol.Version,
+                Features = PrefillProtocol.Features,
+                DaemonInstanceId = _protocol.DaemonInstanceId,
+                MaxConcurrentRuns = _protocol.MaxConcurrentRuns,
+                MaxConcurrentRequests = _protocol.MaxConcurrentRequests,
+                RetentionHours = PrefillProtocol.RetentionHours,
+                RetentionOperations = PrefillProtocol.RetentionOperations,
+                RetentionItems = PrefillProtocol.RetentionItems,
+                ActiveOperations = _prefillOperation.GetActiveOperations(),
+                RecentOperations = _prefillOperation.GetRecentOperations(),
                 IsLoggedIn = _isLoggedIn,
                 IsInitialized = _api?.IsInitialized ?? false,
                 IsPrefilling = _prefillOperation.IsRunning,
@@ -521,7 +615,47 @@ public sealed class SocketCommandInterface : IDisposable
         };
     }
 
-    private static string? ToUtcIso(DateTime? value)
+    private CommandResponse HandleGetOperation(CommandRequest request)
+    {
+        var parameters = request.Parameters ?? throw new ArgumentException("operationId is required");
+        _protocol.ValidateInstance(parameters.GetValueOrDefault("daemonInstanceId") ?? "");
+        var operationId = parameters.GetValueOrDefault("operationId") ?? throw new ArgumentException("operationId is required");
+        var offset = parameters.TryGetValue("offset", out var start) ? int.Parse(start, System.Globalization.CultureInfo.InvariantCulture) : 0;
+        var limit = parameters.TryGetValue("limit", out var count) ? int.Parse(count, System.Globalization.CultureInfo.InvariantCulture) : 100;
+        var page = _prefillOperation.GetOperation(operationId, offset, limit);
+        return new CommandResponse { Id = request.Id, Success = page != null, Data = page, Error = page == null ? "operation-not-found" : null };
+    }
+
+    private RunOptions CaptureOptions(Dictionary<string, string> parameters)
+    {
+        var presets = Presets.Where(key => bool.TryParse(parameters.GetValueOrDefault(key), out var enabled) && enabled).ToArray();
+        if (presets.Length > 1) { throw new ArgumentException("Conflicting selection presets"); }
+        var selection = parameters.GetValueOrDefault("selection") ?? presets.SingleOrDefault() ?? "selected";
+        if (selection is not ("selected" or "all" or "recent" or "top")) { throw new ArgumentException("Unsupported selection preset"); }
+        if (presets.Length > 0 && selection != presets[0]) { throw new ArgumentException("Conflicting selection presets"); }
+        List<string>? ids = null;
+        if (parameters.TryGetValue("appIds", out var json))
+        {
+            ids = JsonSerializer.Deserialize(json, DaemonSerializationContext.Default.ListString)
+                ?? throw new ArgumentException("appIds must be an array");
+            ids = ids.Select(id => id.ToUpperInvariant()).ToList();
+        }
+        var maximum = parameters.TryGetValue("maxConcurrency", out var rawMaximum)
+            ? int.Parse(rawMaximum, System.Globalization.CultureInfo.InvariantCulture) : _protocol.MaxConcurrentRequests;
+        int? topCount = parameters.TryGetValue("topCount", out var rawCount)
+            ? int.Parse(rawCount, System.Globalization.CultureInfo.InvariantCulture) : null;
+        if (topCount <= 0) { throw new ArgumentException("topCount must be positive"); }
+        return _protocol.Capture(new RunOptions
+        {
+            AppIds = ids,
+            Selection = selection,
+            MaxConcurrency = maximum,
+            TopCount = topCount,
+            Force = bool.TryParse(parameters.GetValueOrDefault("force"), out var force) && force
+        });
+    }
+
+    private static string? ToUtcIso(in DateTime? value)
     {
         if (value == null || value.Value == default)
         {
@@ -538,7 +672,10 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Data = games, CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Data = games,
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -550,13 +687,16 @@ public sealed class SocketCommandInterface : IDisposable
         List<string>? appIds = null;
         if (request.Parameters?.TryGetValue("appIds", out var appIdsJson) == true)
         {
-            appIds = JsonSerializer.Deserialize<List<string>>(appIdsJson);
+            appIds = JsonSerializer.Deserialize(appIdsJson, DaemonSerializationContext.Default.ListString);
         }
 
         var result = await _api!.GetCdnInfoAsync(appIds, cancellationToken);
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Data = result, CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Data = result,
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -567,7 +707,10 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Data = selected, CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Data = selected,
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -580,7 +723,10 @@ public sealed class SocketCommandInterface : IDisposable
         {
             return new CommandResponse
             {
-                Id = request.Id, Success = false, Error = "appIds parameter required", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = false,
+                Error = "appIds parameter required",
+                CompletedAt = DateTime.UtcNow
             };
         }
 
@@ -589,7 +735,10 @@ public sealed class SocketCommandInterface : IDisposable
         {
             return new CommandResponse
             {
-                Id = request.Id, Success = false, Error = "appIds must be a JSON array", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = false,
+                Error = "appIds must be a JSON array",
+                CompletedAt = DateTime.UtcNow
             };
         }
 
@@ -599,7 +748,10 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Apps selected", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Apps selected",
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -632,11 +784,71 @@ public sealed class SocketCommandInterface : IDisposable
     {
         EnsureLoggedIn();
 
+        if (request.Parameters?.GetValueOrDefault("protocolVersion") == "2")
+        {
+            if (string.IsNullOrWhiteSpace(request.Id) || request.Id.Length > 128)
+            {
+                throw new ArgumentException("Invalid operationId");
+            }
+            _protocol.ValidateInstance(request.Parameters.GetValueOrDefault("daemonInstanceId") ?? "");
+            var captured = CaptureOptions(request.Parameters);
+            var run = new PrefillRun(request.Id, _protocol, captured, _budget, _claims, _progress,
+                (snapshot, token) => _socketServer.BroadcastProgressAsync(new ProgressEvent(PrefillRun.ToUpdate(snapshot)), token));
+            var api = _api!;
+            var registered = _runs.TryAdd(request.Id, run);
+            var admission = await _prefillOperation.StartAsync(request.Id, PrefillProtocol.Fingerprint(run.Options),
+                run.Progress, token => run.ExecuteAsync(async runToken =>
+                {
+                    try
+                    {
+                        var execute = _execute ?? api.PrefillAsync;
+                        var result = await execute(new PrefillOptions
+                        {
+                            Force = run.Options.Force,
+                            DownloadAllOwnedGames = run.Options.Selection == "all",
+                            Recent = run.Options.Selection == "recent",
+                            Top = run.Options.Selection == "top"
+                        }, run, runToken);
+                        if (!result.Success) { run.Progress.TryChooseTerminal("failed", "prefill-failed"); }
+                    }
+                    catch (EpicLoginException)
+                    {
+                        _isLoggedIn = false;
+                        if (Interlocked.Exchange(ref _authLost, 1) == 0)
+                        {
+                            foreach (var active in _runs.Values)
+                            {
+                                active.Progress.TryChooseTerminal("failed", "auth-lost");
+                                _prefillOperation.Cancel(active.Progress.Snapshot.OperationId, _protocol.DaemonInstanceId);
+                            }
+                            await BroadcastStatusAsync("auth-required", "Epic authentication is required");
+                        }
+                        throw;
+                    }
+                    finally
+                    {
+                        _runs.TryRemove(request.Id, out _);
+                    }
+                }, token), _cts.Token);
+            if (registered && (!admission.Accepted || admission.Replayed)) { _runs.TryRemove(request.Id, out _); }
+            return new CommandResponse
+            {
+                Id = request.Id,
+                Success = admission.Accepted,
+                Error = admission.Error,
+                Data = admission.Accepted ? new PrefillStart(true, request.Id, _protocol.DaemonInstanceId,
+                    admission.Replayed ? admission.Operation!.State : "started") : null
+            };
+        }
+
         if (_prefillOperation.IsRunning)
         {
             return new CommandResponse
             {
-                Id = request.Id, Success = false, Error = "A prefill is already in progress", CompletedAt = DateTime.UtcNow
+                Id = request.Id,
+                Success = false,
+                Error = "A prefill is already in progress",
+                CompletedAt = DateTime.UtcNow
             };
         }
 
@@ -654,12 +866,20 @@ public sealed class SocketCommandInterface : IDisposable
                 options.Force = force;
         }
 
-        await _prefillOperation.StartAsync(async operationToken =>
+        var legacy = new PrefillRun(request.Id, _protocol, new RunOptions
+        {
+            Selection = "legacy",
+            Force = options.Force,
+            MaxConcurrency = _protocol.MaxConcurrentRequests
+        }, _budget, _claims, _progress);
+        await _prefillOperation.StartAsync(operationToken => legacy.ExecuteAsync(async token =>
         {
             try
             {
-                var result = await _api!.PrefillAsync(options, operationToken);
-                operationToken.ThrowIfCancellationRequested();
+                var result = _execute == null
+                    ? await _api!.PrefillAsync(options, token)
+                    : await _execute(options, null, token);
+                token.ThrowIfCancellationRequested();
 
                 if (result.Success)
                 {
@@ -671,26 +891,37 @@ public sealed class SocketCommandInterface : IDisposable
                     throw new InvalidOperationException(result.ErrorMessage ?? "Prefill failed");
                 }
             }
-            catch (OperationCanceledException) when (operationToken.IsCancellationRequested)
+            catch (OperationCanceledException) when (token.IsCancellationRequested)
             {
                 _progress.OnCancelled("Prefill cancelled by user");
                 throw;
             }
-        }, _cts.Token);
+        }, operationToken), _cts.Token);
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Prefill started", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Prefill started",
+            CompletedAt = DateTime.UtcNow
         };
     }
 
     private CommandResponse HandleClearCache(CommandRequest request)
     {
+        if (_prefillOperation.IsRunning)
+        {
+            return new CommandResponse { Id = request.Id, Success = false, Error = "A prefill is already in progress" };
+        }
         var result = EpicPrefillApi.ClearCache();
 
         return new CommandResponse
         {
-            Id = request.Id, Success = result.Success, Data = result, Message = result.Message, CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = result.Success,
+            Data = result,
+            Message = result.Message,
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -700,7 +931,11 @@ public sealed class SocketCommandInterface : IDisposable
 
         return new CommandResponse
         {
-            Id = request.Id, Success = info.Success, Data = info, Message = info.Message, CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = info.Success,
+            Data = info,
+            Message = info.Message,
+            CompletedAt = DateTime.UtcNow
         };
     }
 
@@ -744,18 +979,21 @@ public sealed class SocketCommandInterface : IDisposable
         CommandRequest request,
         CancellationToken cancellationToken)
     {
-        await _prefillOperation.CancelAndWaitAsync(cancellationToken);
+        await _prefillOperation.CancelAllAndWaitAsync(cancellationToken);
         CleanupApiInstance();
 
         return new CommandResponse
         {
-            Id = request.Id, Success = true, Message = "Shutdown complete", CompletedAt = DateTime.UtcNow
+            Id = request.Id,
+            Success = true,
+            Message = "Shutdown complete",
+            CompletedAt = DateTime.UtcNow
         };
     }
 
     private void EnsureLoggedIn()
     {
-        if (!_isLoggedIn || _api == null || !_api.IsInitialized)
+        if (!_isLoggedIn || (_execute == null && (_api == null || !_api.IsInitialized)))
             throw new InvalidOperationException("Not logged in. Please login first.");
     }
 
@@ -826,6 +1064,7 @@ public sealed class SocketCommandInterface : IDisposable
         await _socketServer.BroadcastAuthStateAsync(statusEvent);
     }
 
+    [SuppressMessage("Usage", "VSTHRD002:Avoid problematic synchronous waits", Justification = "The synchronous disposal contract drains process-owned tasks before releasing their resources.")]
     public void Dispose()
     {
         if (_disposed) return;
@@ -833,6 +1072,7 @@ public sealed class SocketCommandInterface : IDisposable
         _cts.Cancel();
         _loginCts?.Dispose();
         _prefillOperation.DisposeAsync().AsTask().GetAwaiter().GetResult();
+        _budget.Dispose();
         _cts.Dispose();
         _api?.Dispose();
         _authProvider.Dispose();

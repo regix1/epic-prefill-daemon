@@ -13,6 +13,91 @@ public sealed class DaemonAdapterTests
     private const string SocketSecretVariable = "PREFILL_SOCKET_SECRET";
 
     [Fact]
+    public async Task SocketReconnectRecoversAcceptedRunsAndCancelsOnlyTheRequestedOperation()
+    {
+        var originalSecret = Environment.GetEnvironmentVariable(SocketSecretVariable);
+        Environment.SetEnvironmentVariable(SocketSecretVariable, null);
+        var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var entered = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+        var calls = 0;
+        var port = GetUnusedTcpPort();
+        using var commands = new SocketCommandInterface(port, async (_, run, token) =>
+        {
+            if (Interlocked.Increment(ref calls) == 3) { entered.TrySetResult(); }
+            await release.Task.WaitAsync(token);
+            run!.OnAppCompleted(new AppDownloadInfo { AppId = run.Options.AppIds![0] }, AppDownloadResult.Success);
+            return new PrefillResult { Success = true };
+        });
+        try
+        {
+            await commands.StartAsync();
+            using var first = new TcpClient();
+            await first.ConnectAsync(IPAddress.Loopback, port);
+            var stream = first.GetStream();
+            await WriteCommandAsync(stream, new CommandRequest { Id = "status", Type = "status" });
+            using var status = await ReadJsonFrameAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+            var instance = status.RootElement.GetProperty("data").GetProperty("daemonInstanceId").GetString()!;
+            foreach (var id in new[] { "one", "two", "three" })
+            {
+                await WriteCommandAsync(stream, new CommandRequest
+                {
+                    Id = id,
+                    Type = "prefill",
+                    Parameters = new()
+                    {
+                        ["protocolVersion"] = "2",
+                        ["daemonInstanceId"] = instance,
+                        ["appIds"] = JsonSerializer.Serialize(new[] { id })
+                    }
+                });
+                using var ack = await ReadJsonFrameAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.Equal(id, ack.RootElement.GetProperty("data").GetProperty("runId").GetString());
+            }
+            await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            first.Dispose();
+            using var second = new TcpClient();
+            await second.ConnectAsync(IPAddress.Loopback, port);
+            stream = second.GetStream();
+            await WriteCommandAsync(stream, new CommandRequest { Id = "reconnected", Type = "status" });
+            using var recovered = await ReadJsonFrameAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.Equal(3, recovered.RootElement.GetProperty("data").GetProperty("activeOperations").GetArrayLength());
+            await WriteCommandAsync(stream, new CommandRequest
+            {
+                Id = "cancel",
+                Type = "cancel-prefill",
+                Parameters = new() { ["operationId"] = "one", ["daemonInstanceId"] = instance }
+            });
+            var receivedAck = false;
+            var receivedTerminal = false;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (!receivedAck || !receivedTerminal)
+            {
+                using var frame = await ReadJsonFrameAsync(stream).WaitAsync(timeout.Token);
+                var root = frame.RootElement;
+                if (root.TryGetProperty("id", out var id))
+                {
+                    Assert.Equal("cancel", id.GetString());
+                    Assert.True(root.GetProperty("success").GetBoolean());
+                    receivedAck = true;
+                }
+                else
+                {
+                    var progress = root.GetProperty("data");
+                    Assert.Equal("one", progress.GetProperty("operationId").GetString());
+                    receivedTerminal |= progress.GetProperty("state").GetString() == "cancelled";
+                }
+            }
+            Assert.Equal(3, calls);
+        }
+        finally
+        {
+            release.TrySetResult();
+            await commands.StopAsync();
+            Environment.SetEnvironmentVariable(SocketSecretVariable, originalSecret);
+        }
+    }
+
+    [Fact]
     public async Task SocketServer_BlockedSerializedCommand_DoesNotBlockControlResponse()
     {
         var originalSecret = Environment.GetEnvironmentVariable(SocketSecretVariable);

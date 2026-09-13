@@ -9,12 +9,6 @@ using System.Text.Json;
 
 namespace EpicPrefill.Api;
 
-public enum SocketServerMode
-{
-    UnixSocket,
-    Tcp
-}
-
 public sealed class SocketServer : IAsyncDisposable
 {
     private static readonly HashSet<string> RedactedTypes = new(StringComparer.OrdinalIgnoreCase)
@@ -328,6 +322,10 @@ public sealed class SocketServer : IAsyncDisposable
 
     private async Task SendEventToClientInternalAsync<T>(ConnectedClient client, T eventData, System.Text.Json.Serialization.Metadata.JsonTypeInfo<T> typeInfo, CancellationToken cancellationToken)
     {
+        if (!string.IsNullOrEmpty(_sharedSecret) && !client.IsAuthenticated) { return; }
+        using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, client.CancellationToken);
+        timeout.CancelAfter(TimeSpan.FromSeconds(4));
+        cancellationToken = timeout.Token;
         try
         {
             await client.SendLock.WaitAsync(cancellationToken);
@@ -349,6 +347,8 @@ public sealed class SocketServer : IAsyncDisposable
         catch (Exception ex)
         {
             _progress.OnLog(LogLevel.Warning, $"Failed to send event to {client.Id}: {ex.Message}");
+            client.RequestCancellation();
+            client.Socket.Close();
         }
     }
 
@@ -390,6 +390,7 @@ public sealed class SocketServer : IAsyncDisposable
         return totalRead;
     }
 
+    [SuppressMessage("Usage", "VSTHRD003:Avoid awaiting foreign Tasks", Justification = "The accept loop belongs to this server and runs without a synchronization context.")]
     public async Task StopAsync()
     {
         await _cts.CancelAsync();
@@ -495,45 +496,4 @@ public sealed class SocketServer : IAsyncDisposable
             CancellationTokenSource.Dispose();
         }
     }
-}
-
-public class SocketEvent<T>
-{
-    public string Type { get; init; } = string.Empty;
-    public T? Data { get; init; }
-    public DateTime Timestamp { get; init; } = DateTime.UtcNow;
-}
-
-public class CredentialChallengeEvent : SocketEvent<CredentialChallenge>
-{
-    public CredentialChallengeEvent(CredentialChallenge challenge)
-    {
-        Type = "credential-challenge";
-        Data = challenge;
-    }
-}
-
-public class ProgressEvent : SocketEvent<PrefillProgressUpdate>
-{
-    public ProgressEvent(PrefillProgressUpdate progress)
-    {
-        Type = "progress";
-        Data = progress;
-    }
-}
-
-public class AuthStateEvent : SocketEvent<AuthStateData>
-{
-    public AuthStateEvent(string state, string? message = null, string? displayName = null)
-    {
-        Type = "auth-state";
-        Data = new AuthStateData { State = state, Message = message, DisplayName = displayName };
-    }
-}
-
-public class AuthStateData
-{
-    public string State { get; init; } = string.Empty;
-    public string? Message { get; init; }
-    public string? DisplayName { get; init; }
 }

@@ -1,5 +1,6 @@
 ﻿namespace EpicPrefill
 {
+#nullable enable annotations
     public sealed class EpicGamesManager : IDisposable
     {
         private readonly IAnsiConsole _ansiConsole;
@@ -7,14 +8,12 @@
         private readonly IEpicAuthProvider? _authProvider;
         private readonly IPrefillProgress _progress;
 
-        private readonly DownloadHandler _downloadHandler;
         private readonly EpicGamesApi _epicApi;
         private readonly AppInfoHandler _appInfoHandler;
         private readonly ManifestHandler _manifestHandler;
         private readonly UserAccountManager _userAccountManager;
         private readonly HttpClientFactory _httpClientFactory;
 
-        private readonly PrefillSummaryResult _prefillSummaryResult = new PrefillSummaryResult();
 
         public EpicGamesManager(IAnsiConsole ansiConsole, DownloadArguments downloadArgs, IEpicAuthProvider? authProvider = null, IPrefillProgress? progress = null)
         {
@@ -24,7 +23,6 @@
             _progress = progress ?? NullProgress.Instance;
 
             // Setup required classes
-            _downloadHandler = new DownloadHandler(_ansiConsole, _progress);
             _appInfoHandler = new AppInfoHandler(_ansiConsole);
             _userAccountManager = UserAccountManager.LoadFromFile(_ansiConsole, _authProvider!);
 
@@ -47,12 +45,16 @@
             await _userAccountManager.LoginAsync(cancellationToken);
         }
 
-        public async Task DownloadMultipleAppsAsync(PrefillAppOrder order, bool force = false, List<string> manualIds = null, CancellationToken cancellationToken = default)
+        public async Task DownloadMultipleAppsAsync(PrefillAppOrder order, bool force = false, List<string>? manualIds = null, PrefillRun? run = null, CancellationToken cancellationToken = default)
         {
+            var _progress = (IPrefillProgress?)run ?? this._progress;
+            var _ansiConsole = run == null ? this._ansiConsole : new ApiConsoleAdapter(_authProvider!, run);
+            var _prefillSummaryResult = new PrefillSummaryResult();
+            using var _downloadHandler = new DownloadHandler(_ansiConsole, _progress);
             var allOwnedGames = await GetAvailableGamesAsync(cancellationToken);
 
             List<string> appIdsToDownload;
-            if (manualIds != null && manualIds.Count > 0)
+            if (manualIds != null && (run != null || manualIds.Count > 0))
             {
                 // An explicit id list always wins over the preset ordering.
                 appIdsToDownload = new List<string>(manualIds);
@@ -60,6 +62,13 @@
             else
             {
                 appIdsToDownload = await ResolveAppIdsForOrderAsync(order, allOwnedGames, cancellationToken);
+            }
+
+            if (run != null)
+            {
+                appIdsToDownload = appIdsToDownload.Select(id => id.ToUpperInvariant()).Distinct(StringComparer.Ordinal).ToList();
+                if (run.Options.TopCount is int count && order == PrefillAppOrder.Top) { appIdsToDownload = appIdsToDownload.Take(count).ToList(); }
+                if (!run.Progress.Snapshot.SelectionResolved) { run.Progress.ResolveSelection(appIdsToDownload); }
             }
 
             // Whitespace divider
@@ -72,9 +81,15 @@
                 cancellationToken.ThrowIfCancellationRequested();
 
                 AppInfo? app = null;
+                var claim = run?.TryClaim(appId);
+                if (run != null && claim == null)
+                {
+                    _progress.OnAppCompleted(new AppDownloadInfo { AppId = appId, Name = appId }, AppDownloadResult.Skipped);
+                    continue;
+                }
                 try
                 {
-                    app = allOwnedGames.FirstOrDefault(e => e.AppId == appId);
+                    app = allOwnedGames.FirstOrDefault(e => string.Equals(e.AppId, appId, StringComparison.OrdinalIgnoreCase));
                     if (app == null)
                     {
                         _progress.OnLog(LogLevel.Warning, $"App {appId} not found in owned games, skipping");
@@ -85,14 +100,15 @@
                         continue;
                     }
 
-                    await DownloadSingleAppAsync(app, force, cancellationToken);
+                    await DownloadSingleAppAsync(app, _downloadHandler, _prefillSummaryResult, _progress, force, cancellationToken);
+                    if (run?.Progress.Terminal != null || run?.Progress.Snapshot.State == "cancelling") { return; }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
                     // Propagate cancellation - don't treat it as a download error
                     throw;
                 }
-                catch (Exception e) when (e is LancacheNotFoundException)
+                catch (Exception e) when (e is LancacheNotFoundException or EpicLoginException)
                 {
                     // We'll want to bomb out the entire process for these exceptions, as they mean we can't prefill any apps at all
                     throw;
@@ -118,7 +134,7 @@
             // Notify completion via progress interface
             _progress.OnPrefillCompleted(new PrefillSummary
             {
-                TotalApps = _prefillSummaryResult.AlreadyUpToDate + _prefillSummaryResult.Updated + _prefillSummaryResult.FailedApps,
+                TotalApps = appIdsToDownload.Count,
                 UpdatedApps = _prefillSummaryResult.Updated,
                 AlreadyUpToDate = _prefillSummaryResult.AlreadyUpToDate,
                 FailedApps = _prefillSummaryResult.FailedApps,
@@ -193,6 +209,7 @@
                 // general handler below and degrades to a full owned-games prefill instead of aborting the run.
                 throw;
             }
+            catch (EpicLoginException) { throw; }
             catch (Exception e)
             {
                 _progress.OnLog(LogLevel.Error, $"Top preset: could not load Epic playtime ({e.Message}); prefilling all owned games instead.");
@@ -200,7 +217,8 @@
             }
         }
 
-        private async Task DownloadSingleAppAsync(AppInfo app, bool force = false, CancellationToken cancellationToken = default)
+        private async Task DownloadSingleAppAsync(AppInfo app, DownloadHandler _downloadHandler, PrefillSummaryResult _prefillSummaryResult,
+            IPrefillProgress _progress, bool force = false, CancellationToken cancellationToken = default)
         {
             cancellationToken.ThrowIfCancellationRequested();
 
@@ -260,7 +278,6 @@
             // Logging some metadata about the downloads
             var downloadTimer = Stopwatch.StartNew();
             var totalBytes = ByteSize.FromBytes(chunkDownloadQueue.Sum(e => (long)e.DownloadSizeBytes));
-            _prefillSummaryResult.TotalBytesTransferred += totalBytes;
 
             // Notify that app download is starting
             var appDownloadInfo = new AppDownloadInfo
@@ -276,6 +293,7 @@
 
             // Finally run the queued downloads
             var downloadSuccessful = await _downloadHandler.DownloadQueuedChunksAsync(chunkDownloadQueue, manifestDownloadUrl, appId: app.AppId, appName: app.Title, cancellationToken: cancellationToken);
+            _prefillSummaryResult.TotalBytesTransferred += ByteSize.FromBytes(_downloadHandler.BytesTransferred);
             cancellationToken.ThrowIfCancellationRequested();
             if (downloadSuccessful)
             {
@@ -283,9 +301,9 @@
                 _ansiConsole.LogMarkupLine($"Finished in {LightYellow(downloadTimer.FormatElapsedString())} - {Magenta(totalBytes.CalculateBitrate(downloadTimer))}");
                 _ansiConsole.WriteLine();
 
-                _appInfoHandler.MarkDownloadAsSuccessful(app);
+                if (!_appInfoHandler.MarkDownloadAsSuccessful(app, _progress as PrefillRun, (long)totalBytes.Bytes)) { return; }
                 _prefillSummaryResult.Updated++;
-                _progress.OnAppCompleted(appDownloadInfo, AppDownloadResult.Success);
+                if (_progress is not PrefillRun) { _progress.OnAppCompleted(appDownloadInfo, AppDownloadResult.Success); }
             }
             else
             {
@@ -356,7 +374,7 @@
 
         public void Dispose()
         {
-            _downloadHandler.Dispose();
+            _epicApi.Dispose();
         }
 
         #region Select Apps

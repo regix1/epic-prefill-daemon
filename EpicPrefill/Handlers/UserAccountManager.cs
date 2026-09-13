@@ -11,6 +11,11 @@ namespace EpicPrefill.Handlers
         private readonly IAnsiConsole _ansiConsole;
         private readonly IEpicAuthProvider _authProvider;
         private readonly HttpClient _client;
+        private readonly SemaphoreSlim _loginLock = new(1, 1);
+        private readonly Action<OauthToken> _save;
+        private readonly object _tokenLock = new();
+        private OauthToken _token;
+        private long _generation;
 
         //TODO I'm not sure where this link comes from.  Can I possibly setup my own?
         private const string LoginUrl = "https://legendary.gl/epiclogin";
@@ -25,86 +30,118 @@ namespace EpicPrefill.Handlers
         private const int MaxRetries = 2;
 
         //TODO this should probably be private
-        public OauthToken OauthToken { get; set; }
+        public OauthToken OauthToken
+        {
+            get { lock (_tokenLock) { return _token; } }
+            set { lock (_tokenLock) { _token = value; _generation++; } }
+        }
 
         private UserAccountManager(IAnsiConsole ansiConsole, IEpicAuthProvider authProvider)
+            : this(ansiConsole, authProvider, null, null)
+        {
+        }
+
+        internal UserAccountManager(IAnsiConsole ansiConsole, IEpicAuthProvider authProvider,
+            HttpMessageHandler handler, Action<OauthToken> save)
         {
             _ansiConsole = ansiConsole;
             _authProvider = authProvider;
-            _client = new HttpClient
-            {
-                Timeout = AppConfig.DefaultRequestTimeout
-            };
+            _save = save;
+            _client = handler == null ? new HttpClient() : new HttpClient(handler, disposeHandler: false);
+            _client.Timeout = AppConfig.DefaultRequestTimeout;
             _client.DefaultRequestHeaders.Add("User-Agent", AppConfig.DefaultUserAgent);
         }
 
         public async Task LoginAsync(CancellationToken cancellationToken = default)
         {
-            if (!OauthTokenIsExpired())
+            await _loginLock.WaitAsync(cancellationToken);
+            try
             {
-                _ansiConsole.LogMarkupLine("Reusing existing auth session...");
-                return;
-            }
-
-            int retryCount = 0;
-            while (OauthTokenIsExpired() && retryCount < MaxRetries)
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                try
+                if (!OauthTokenIsExpired())
                 {
-                    var requestParams = await BuildRequestParamsAsync(cancellationToken);
+                    _ansiConsole.LogMarkupLine("Reusing existing auth session...");
+                    return;
+                }
 
-                    var authUri = new Uri($"https://{OauthHost}/account/api/oauth/token");
-                    using var request = new HttpRequestMessage(HttpMethod.Post, authUri);
-                    request.Headers.Authorization = BasicAuthentication.ToAuthenticationHeader(BasicUsername, BasicPassword);
-                    request.Content = new FormUrlEncodedContent(requestParams);
+                int retryCount = 0;
+                while (OauthTokenIsExpired() && retryCount < MaxRetries)
+                {
+                    cancellationToken.ThrowIfCancellationRequested();
 
-                    using var response = await _client.SendAsync(
-                        request,
-                        HttpCompletionOption.ResponseContentRead,
-                        cancellationToken);
-
-                    if (!response.IsSuccessStatusCode)
+                    try
                     {
-                        var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                        CheckForCorrectiveAction(errorBody);
-                        // Not a corrective action - throw generic HTTP error
-                        response.EnsureSuccessStatusCode();
+                        long generation;
+                        lock (_tokenLock) { generation = _generation; }
+                        var requestParams = await BuildRequestParamsAsync(cancellationToken);
+
+                        var authUri = new Uri($"https://{OauthHost}/account/api/oauth/token");
+                        using var request = new HttpRequestMessage(HttpMethod.Post, authUri);
+                        request.Headers.Authorization = BasicAuthentication.ToAuthenticationHeader(BasicUsername, BasicPassword);
+                        request.Content = new FormUrlEncodedContent(requestParams);
+
+                        using var response = await _client.SendAsync(
+                            request,
+                            HttpCompletionOption.ResponseContentRead,
+                            cancellationToken);
+
+                        if (!response.IsSuccessStatusCode)
+                        {
+                            var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                            CheckForCorrectiveAction(errorBody);
+                            // Not a corrective action - throw generic HTTP error
+                            response.EnsureSuccessStatusCode();
+                        }
+
+                        using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                        var token = await JsonSerializer.DeserializeAsync(
+                            responseStream,
+                            SerializationContext.Default.OauthToken,
+                            cancellationToken);
+
+                        if (token == null) { throw new EpicLoginException("auth-lost"); }
+
+                        lock (_tokenLock)
+                        {
+                            if (generation != _generation) { throw new EpicLoginException("Account changed during authentication."); }
+                            Save(token);
+                            _token = token;
+                        }
+                    }
+                    catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                    {
+                        throw;
+                    }
+                    catch (EpicLoginException)
+                    {
+                        // Don't retry corrective action errors - they require user action
+                        throw;
+                    }
+                    catch (Exception e)
+                    {
+                        if (PrefillRun.Current != null && e is HttpRequestException { StatusCode: System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden })
+                        {
+                            throw new EpicLoginException("auth-lost");
+                        }
+                        FileLogger.LogExceptionNoStackTrace("Epic token exchange failed", e);
+                        if (PrefillRun.Current != null) { throw; }
+                        // If the login failed due to a bad request then we'll clear out the existing token and try again
+                        if (e is HttpRequestException { StatusCode: System.Net.HttpStatusCode.BadRequest or System.Net.HttpStatusCode.Unauthorized })
+                        {
+                            OauthToken = null;
+                        }
                     }
 
-                    using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-                    OauthToken = await JsonSerializer.DeserializeAsync(
-                        responseStream,
-                        SerializationContext.Default.OauthToken,
-                        cancellationToken);
-
-                    Save();
-                }
-                catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                {
-                    throw;
-                }
-                catch (EpicLoginException)
-                {
-                    // Don't retry corrective action errors - they require user action
-                    throw;
-                }
-                catch (Exception e)
-                {
-                    // If the login failed due to a bad request then we'll clear out the existing token and try again
-                    if (e is HttpRequestException)
-                    {
-                        OauthToken = null;
-                    }
+                    retryCount++;
                 }
 
-                retryCount++;
+                if (retryCount >= MaxRetries)
+                {
+                    throw new EpicLoginException("Unable to login to Epic!  Try again in a few moments...");
+                }
             }
-
-            if (retryCount >= MaxRetries)
+            finally
             {
-                throw new EpicLoginException("Unable to login to Epic!  Try again in a few moments...");
+                _loginLock.Release();
             }
         }
 
@@ -159,6 +196,10 @@ namespace EpicPrefill.Handlers
         private async Task<Dictionary<string, string>> BuildRequestParamsAsync(
             CancellationToken cancellationToken = default)
         {
+            if (PrefillRun.Current != null && (OauthToken == null || RefreshTokenIsExpired()))
+            {
+                throw new EpicLoginException("auth-lost");
+            }
             // Handles the user logging in for the first time, as well as when the refresh token has expired, or when an unknown failure has occurred
             if (OauthToken == null || RefreshTokenIsExpired())
             {
@@ -192,24 +233,26 @@ namespace EpicPrefill.Handlers
         //TODO this should probably not be referenced externally
         public bool OauthTokenIsExpired()
         {
-            if (OauthToken == null)
+            var token = OauthToken;
+            if (token == null)
             {
                 return true;
             }
 
             // Tokens are valid for 8 hours, but we're adding a buffer of 10 minutes to make sure that the token doesn't expire while we're using it.
-            return DateTimeOffset.UtcNow.DateTime > OauthToken.ExpiresAt.AddMinutes(-10);
+            return DateTimeOffset.UtcNow.DateTime > token.ExpiresAt.AddMinutes(-10);
         }
 
         private bool RefreshTokenIsExpired()
         {
-            if (OauthToken == null)
+            var token = OauthToken;
+            if (token == null)
             {
                 return true;
             }
 
             // Tokens are valid for 8 hours, but we're adding a buffer of 10 minutes to make sure that the token doesn't expire while we're using it.
-            return DateTimeOffset.UtcNow.DateTime > OauthToken.RefreshTokenExpiresAt;
+            return DateTimeOffset.UtcNow.DateTime > token.RefreshTokenExpiresAt;
         }
 
         //TODO document
@@ -260,11 +303,22 @@ namespace EpicPrefill.Handlers
             return accountManager;
         }
 
-        private void Save()
+        private void Save(OauthToken token = null)
         {
-            var json = JsonSerializer.Serialize(OauthToken, SerializationContext.Default.OauthToken);
+            if (_save != null) { _save(token ?? OauthToken); return; }
+            var json = JsonSerializer.Serialize(token ?? OauthToken, SerializationContext.Default.OauthToken);
             var encrypted = TokenStorageEncryption.Encrypt(json);
-            File.WriteAllText(AppConfig.AccountSettingsStorePath, encrypted);
+            var temporary = AppConfig.AccountSettingsStorePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                File.WriteAllText(temporary, encrypted);
+                TokenStorageEncryption.SetRestrictivePermissions(temporary);
+                File.Move(temporary, AppConfig.AccountSettingsStorePath, true);
+            }
+            finally
+            {
+                if (File.Exists(temporary)) { File.Delete(temporary); }
+            }
             TokenStorageEncryption.SetRestrictivePermissions(AppConfig.AccountSettingsStorePath);
         }
 
@@ -327,41 +381,53 @@ namespace EpicPrefill.Handlers
         /// </summary>
         public async Task ImportRefreshTokenAsync(string refreshToken, CancellationToken cancellationToken = default)
         {
-            if (string.IsNullOrWhiteSpace(refreshToken))
+            await _loginLock.WaitAsync(cancellationToken);
+            try
             {
-                throw new EpicLoginException("A non-empty refresh token is required for headless login.");
-            }
+                if (string.IsNullOrWhiteSpace(refreshToken))
+                {
+                    throw new EpicLoginException("A non-empty refresh token is required for headless login.");
+                }
+                long generation;
+                lock (_tokenLock) { generation = _generation; }
 
-            var requestParams = new Dictionary<string, string>
+                var requestParams = new Dictionary<string, string>
             {
                 { "token_type", "eg1" },
                 { "grant_type", "refresh_token" },
                 { "refresh_token", refreshToken }
             };
 
-            var authUri = new Uri($"https://{OauthHost}/account/api/oauth/token");
-            using var request = new HttpRequestMessage(HttpMethod.Post, authUri);
-            request.Headers.Authorization = BasicAuthentication.ToAuthenticationHeader(BasicUsername, BasicPassword);
-            request.Content = new FormUrlEncodedContent(requestParams);
+                var authUri = new Uri($"https://{OauthHost}/account/api/oauth/token");
+                using var request = new HttpRequestMessage(HttpMethod.Post, authUri);
+                request.Headers.Authorization = BasicAuthentication.ToAuthenticationHeader(BasicUsername, BasicPassword);
+                request.Content = new FormUrlEncodedContent(requestParams);
 
-            using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
+                using var response = await _client.SendAsync(request, HttpCompletionOption.ResponseContentRead, cancellationToken);
 
-            if (!response.IsSuccessStatusCode)
-            {
-                var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
-                CheckForCorrectiveAction(errorBody);
-                throw new EpicLoginException("Headless login failed - the supplied refresh token was rejected by Epic.");
+                if (!response.IsSuccessStatusCode)
+                {
+                    var errorBody = await response.Content.ReadAsStringAsync(cancellationToken);
+                    CheckForCorrectiveAction(errorBody);
+                    throw new EpicLoginException("Headless login failed - the supplied refresh token was rejected by Epic.");
+                }
+
+                using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
+                var token = await JsonSerializer.DeserializeAsync(responseStream, SerializationContext.Default.OauthToken, cancellationToken);
+
+                if (token == null)
+                {
+                    throw new EpicLoginException("Headless login failed - Epic returned an empty token response.");
+                }
+
+                lock (_tokenLock)
+                {
+                    if (generation != _generation) { throw new EpicLoginException("Account changed during authentication."); }
+                    Save(token);
+                    _token = token;
+                }
             }
-
-            using var responseStream = await response.Content.ReadAsStreamAsync(cancellationToken);
-            OauthToken = await JsonSerializer.DeserializeAsync(responseStream, SerializationContext.Default.OauthToken, cancellationToken);
-
-            if (OauthToken == null)
-            {
-                throw new EpicLoginException("Headless login failed - Epic returned an empty token response.");
-            }
-
-            Save();
+            finally { _loginLock.Release(); }
         }
 
     }

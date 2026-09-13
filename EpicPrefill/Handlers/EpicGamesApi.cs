@@ -5,10 +5,13 @@
     /// The methods here are intended to query the API and return the data as is with no transformations,
     /// however fields that are not needed by EpicPrefill will be omitted for the sake of simplicity.
     /// </summary>
-    public sealed class EpicGamesApi
+    public sealed class EpicGamesApi : IDisposable
     {
         private readonly IAnsiConsole _ansiConsole;
         private readonly HttpClientFactory _httpClientFactory;
+        private readonly SemaphoreSlim _catalogLock = new(1, 1);
+
+        public void Dispose() => _catalogLock.Dispose();
 
         private const string LauncherHost = "https://launcher-public-service-prod06.ol.epicgames.com";
         private const string CatalogHost = "https://catalog-public-service-prod06.ol.epicgames.com";
@@ -37,11 +40,13 @@
         /// </summary>
         private static async Task<string> ReadBodyAsync(HttpResponseMessage response, string host, CancellationToken cancellationToken)
         {
+            using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+            timeout.CancelAfter(AppConfig.DefaultRequestTimeout);
             try
             {
-                return await response.Content.ReadAsStringAsync(cancellationToken).WaitAsync(AppConfig.DefaultRequestTimeout, cancellationToken);
+                return await response.Content.ReadAsStringAsync(timeout.Token);
             }
-            catch (TimeoutException)
+            catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
             {
                 throw new TimeoutException(
                     $"{host} sent a reply header and then stopped sending the body for {AppConfig.DefaultRequestTimeout.TotalSeconds} seconds.  " +
@@ -65,10 +70,15 @@
 
             // Send request
             using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+            using var permit = PrefillRun.Current == null ? null : await PrefillRun.Current.AcquireAsync(cancellationToken);
             using var response = await httpClient.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            {
+                throw new EpicLoginException("auth-lost");
+            }
             response.EnsureSuccessStatusCode();
 
             // Read and deserialize
@@ -111,7 +121,12 @@
             using var request = new HttpRequestMessage(HttpMethod.Get, requestUri);
 
             using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+            using var permit = PrefillRun.Current == null ? null : await PrefillRun.Current.AcquireAsync(cancellationToken);
             using var response = await httpClient.SendAsync(request, HttpCompletionOption.ResponseHeadersRead, cancellationToken);
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            {
+                throw new EpicLoginException("auth-lost");
+            }
             response.EnsureSuccessStatusCode();
 
             var responseContent = await ReadBodyAsync(response, LibraryHost, cancellationToken);
@@ -137,112 +152,121 @@
             List<Asset> apps,
             CancellationToken cancellationToken = default)
         {
-            var metadataDictionary = new Dictionary<string, AppMetadataResponse>();
-
-            // Load cache from disk, if it exists
-            if (File.Exists(MetadataCachePath))
+            await _catalogLock.WaitAsync(cancellationToken);
+            try
             {
-                var allText = await File.ReadAllTextAsync(MetadataCachePath, cancellationToken);
-                // A cache file holding literal 'null' - a truncated write, or one an older build left
-                // behind - deserializes to null. Starting from an empty dictionary rebuilds it on this
-                // run, instead of throwing on every call forever because the file is only ever rewritten
-                // after a successful load. [16]
-                metadataDictionary = JsonSerializer.Deserialize(allText, SerializationContext.Default.DictionaryStringAppMetadataResponse)
-                                     ?? new Dictionary<string, AppMetadataResponse>();
-            }
+                var metadataDictionary = new Dictionary<string, AppMetadataResponse>();
 
-            // Determine which apps don't already have their metadata loaded. A cache entry written
-            // before artwork support existed deserializes with KeyImages == null, so it is treated
-            // the same as a missing entry and re-requested - otherwise every already-cached app on
-            // an existing install would keep its art-less cache forever.
-            List<Asset> appsMissingMetadata = GetAppsMissingMetadata(apps, metadataDictionary)
-                                                      .OrderBy(e => e.AppId)
-                                                      .ToList();
+                // Load cache from disk, if it exists
+                if (File.Exists(MetadataCachePath))
+                {
+                    var allText = await File.ReadAllTextAsync(MetadataCachePath, cancellationToken);
+                    // A cache file holding literal 'null' - a truncated write, or one an older build left
+                    // behind - deserializes to null. Starting from an empty dictionary rebuilds it on this
+                    // run, instead of throwing on every call forever because the file is only ever rewritten
+                    // after a successful load. [16]
+                    metadataDictionary = JsonSerializer.Deserialize(allText, SerializationContext.Default.DictionaryStringAppMetadataResponse)
+                                         ?? new Dictionary<string, AppMetadataResponse>();
+                }
 
-            // If everything is cached, return
-            if (!appsMissingMetadata.Any())
-            {
+                // Determine which apps don't already have their metadata loaded. A cache entry written
+                // before artwork support existed deserializes with KeyImages == null, so it is treated
+                // the same as a missing entry and re-requested - otherwise every already-cached app on
+                // an existing install would keep its art-less cache forever.
+                List<Asset> appsMissingMetadata = GetAppsMissingMetadata(apps, metadataDictionary)
+                                                          .OrderBy(e => e.AppId)
+                                                          .ToList();
+
+                // If everything is cached, return
+                if (!appsMissingMetadata.Any())
+                {
+                    return metadataDictionary;
+                }
+
+                await _ansiConsole.CreateSpectreProgress().StartAsync(async context =>
+                {
+                    var progressTask = context.AddTask("Loading app metadata...", maxValue: appsMissingMetadata.Count);
+                    var unsavedApps = 0;
+
+                    try
+                    {
+                        foreach (var app in appsMissingMetadata)
+                        {
+                            cancellationToken.ThrowIfCancellationRequested();
+
+                            AppMetadataResponse metadata;
+                            try
+                            {
+                                metadata = await GetSingleAppMetadataAsync(app, cancellationToken);
+                            }
+                            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+                            {
+                                throw;
+                            }
+                            catch (EpicLoginException) { throw; }
+                            catch (Exception e)
+                            {
+                                // One delisted or region-locked catalog item must not end the run for every
+                                // other app in the library. [15]
+                                FileLogger.LogExceptionNoStackTrace($"Metadata request for app {app.AppId}", e);
+                                progressTask.Increment(1);
+                                continue;
+                            }
+
+                            // Epic answers with no usable entry for some catalog items, so there is nothing
+                            // to record for this app. [15]
+                            if (metadata == null)
+                            {
+                                progressTask.Increment(1);
+                                continue;
+                            }
+
+                            // Epic omits keyImages entirely for some catalog items. Storing an empty list rather
+                            // than null records that the app was checked and has no artwork, so it stops matching
+                            // the cache-miss rule below instead of being re-requested on every future run.
+                            metadata.KeyImages ??= new List<KeyImage>();
+                            // Indexer, not .Add: an app can already be a key here with a stale (no-artwork)
+                            // cached value, and this re-fetch is meant to replace that entry, not collide with it.
+                            metadataDictionary[app.AppId] = metadata;
+                            progressTask.Increment(1);
+
+                            unsavedApps++;
+                            if (unsavedApps >= MetadataCacheSaveInterval)
+                            {
+                                await SaveMetadataCacheAsync(metadataDictionary);
+                                unsavedApps = 0;
+                            }
+                        }
+                    }
+                    finally
+                    {
+                        // A cancel or a failure part way through has to keep the apps already fetched.
+                        // Without this a library too big to finish inside one attempt refetches from zero
+                        // every retry and never converges. [13]
+                        if (unsavedApps > 0)
+                        {
+                            try
+                            {
+                                await SaveMetadataCacheAsync(metadataDictionary);
+                            }
+                            catch (Exception e)
+                            {
+                                // Best effort while unwinding: a write failure here must not replace the
+                                // exception that is already on its way out.
+                                FileLogger.LogExceptionNoStackTrace("Writing the app metadata cache", e);
+                            }
+                        }
+                    }
+                });
+
+                _ansiConsole.LogMarkupLine($"Loaded new app metadata for {LightYellow(appsMissingMetadata.Count)} apps");
+
                 return metadataDictionary;
             }
-
-            await _ansiConsole.CreateSpectreProgress().StartAsync(async context =>
+            finally
             {
-                var progressTask = context.AddTask("Loading app metadata...", maxValue: appsMissingMetadata.Count);
-                var unsavedApps = 0;
-
-                try
-                {
-                    foreach (var app in appsMissingMetadata)
-                    {
-                        cancellationToken.ThrowIfCancellationRequested();
-
-                        AppMetadataResponse metadata;
-                        try
-                        {
-                            metadata = await GetSingleAppMetadataAsync(app, cancellationToken);
-                        }
-                        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
-                        {
-                            throw;
-                        }
-                        catch (Exception e)
-                        {
-                            // One delisted or region-locked catalog item must not end the run for every
-                            // other app in the library. [15]
-                            FileLogger.LogExceptionNoStackTrace($"Metadata request for app {app.AppId}", e);
-                            progressTask.Increment(1);
-                            continue;
-                        }
-
-                        // Epic answers with no usable entry for some catalog items, so there is nothing
-                        // to record for this app. [15]
-                        if (metadata == null)
-                        {
-                            progressTask.Increment(1);
-                            continue;
-                        }
-
-                        // Epic omits keyImages entirely for some catalog items. Storing an empty list rather
-                        // than null records that the app was checked and has no artwork, so it stops matching
-                        // the cache-miss rule below instead of being re-requested on every future run.
-                        metadata.KeyImages ??= new List<KeyImage>();
-                        // Indexer, not .Add: an app can already be a key here with a stale (no-artwork)
-                        // cached value, and this re-fetch is meant to replace that entry, not collide with it.
-                        metadataDictionary[app.AppId] = metadata;
-                        progressTask.Increment(1);
-
-                        unsavedApps++;
-                        if (unsavedApps >= MetadataCacheSaveInterval)
-                        {
-                            await SaveMetadataCacheAsync(metadataDictionary);
-                            unsavedApps = 0;
-                        }
-                    }
-                }
-                finally
-                {
-                    // A cancel or a failure part way through has to keep the apps already fetched.
-                    // Without this a library too big to finish inside one attempt refetches from zero
-                    // every retry and never converges. [13]
-                    if (unsavedApps > 0)
-                    {
-                        try
-                        {
-                            await SaveMetadataCacheAsync(metadataDictionary);
-                        }
-                        catch (Exception e)
-                        {
-                            // Best effort while unwinding: a write failure here must not replace the
-                            // exception that is already on its way out.
-                            FileLogger.LogExceptionNoStackTrace("Writing the app metadata cache", e);
-                        }
-                    }
-                }
-            });
-
-            _ansiConsole.LogMarkupLine($"Loaded new app metadata for {LightYellow(appsMissingMetadata.Count)} apps");
-
-            return metadataDictionary;
+                _catalogLock.Release();
+            }
         }
 
         /// <summary>
@@ -253,7 +277,16 @@
         private async Task SaveMetadataCacheAsync(Dictionary<string, AppMetadataResponse> metadataDictionary)
         {
             var serialized = JsonSerializer.Serialize(metadataDictionary, SerializationContext.Default.DictionaryStringAppMetadataResponse);
-            await File.WriteAllTextAsync(MetadataCachePath, serialized, CancellationToken.None);
+            var temporary = MetadataCachePath + "." + Guid.NewGuid().ToString("N") + ".tmp";
+            try
+            {
+                await File.WriteAllTextAsync(temporary, serialized, CancellationToken.None);
+                File.Move(temporary, MetadataCachePath, true);
+            }
+            finally
+            {
+                if (File.Exists(temporary)) { File.Delete(temporary); }
+            }
         }
 
         /// <summary>
@@ -293,10 +326,15 @@
 
             // Send request
             using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+            using var permit = PrefillRun.Current == null ? null : await PrefillRun.Current.AcquireAsync(cancellationToken);
             using var response = await httpClient.SendAsync(
                 request,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            {
+                throw new EpicLoginException("auth-lost");
+            }
             response.EnsureSuccessStatusCode();
 
             var responseContent = await ReadBodyAsync(response, CatalogHost, cancellationToken);
@@ -327,10 +365,15 @@
 
             using var requestMessage = new HttpRequestMessage(HttpMethod.Get, new Uri(url));
             using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+            using var permit = PrefillRun.Current == null ? null : await PrefillRun.Current.AcquireAsync(cancellationToken);
             using var response = await httpClient.SendAsync(
                 requestMessage,
                 HttpCompletionOption.ResponseHeadersRead,
                 cancellationToken);
+            if (response.StatusCode is System.Net.HttpStatusCode.Unauthorized or System.Net.HttpStatusCode.Forbidden)
+            {
+                throw new EpicLoginException("auth-lost");
+            }
             response.EnsureSuccessStatusCode();
 
             var responseContent = await ReadBodyAsync(response, LauncherHost, cancellationToken);

@@ -28,47 +28,10 @@ namespace EpicPrefill.Api;
 [JsonSerializable(typeof(SocketEvent<AuthStateData>))]
 [JsonSerializable(typeof(AuthStateData))]
 [JsonSerializable(typeof(object))]
+[JsonSerializable(typeof(RunSnapshot))]
+[JsonSerializable(typeof(RunItemSnapshot))]
+[JsonSerializable(typeof(OperationPage))]
+[JsonSerializable(typeof(PrefillStart))]
 internal sealed partial class DaemonSerializationContext : JsonSerializerContext
 {
-}
-
-public class StatusData
-{
-    public bool IsLoggedIn { get; init; }
-    public bool IsInitialized { get; init; }
-    public bool IsPrefilling { get; init; }
-
-    /// <summary>
-    /// UTC ISO-8601 expiry of the refresh token (refresh_expires_at). Null when not logged in / no token on disk.
-    /// </summary>
-    public string? AuthExpiryUtc { get; init; }
-
-    /// <summary>
-    /// UTC ISO-8601 expiry of the access token (expires_at). Null when not logged in / no token on disk.
-    /// </summary>
-    public string? AccessExpiryUtc { get; init; }
-
-    /// <summary>
-    /// Display name of the logged-in account, when available. Null when not logged in / no token on disk.
-    /// </summary>
-    public string? AccountDisplayName { get; init; }
-}
-
-public class CommandRequest
-{
-    public string Id { get; set; } = string.Empty;
-    public string Type { get; set; } = string.Empty;
-    public Dictionary<string, string>? Parameters { get; set; }
-    public DateTime CreatedAt { get; set; } = DateTime.UtcNow;
-}
-
-public class CommandResponse
-{
-    public string Id { get; set; } = string.Empty;
-    public bool Success { get; set; }
-    public string? Message { get; set; }
-    public string? Error { get; set; }
-    public object? Data { get; set; }
-    public bool RequiresLogin { get; set; }
-    public DateTime CompletedAt { get; set; } = DateTime.UtcNow;
 }

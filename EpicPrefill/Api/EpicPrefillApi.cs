@@ -364,8 +364,12 @@ public sealed class EpicPrefillApi : IDisposable
     /// <summary>
     /// Runs the prefill operation
     /// </summary>
-    public async Task<PrefillResult> PrefillAsync(
+    public Task<PrefillResult> PrefillAsync(PrefillOptions? options = null, CancellationToken cancellationToken = default)
+        => PrefillAsync(options, null, cancellationToken);
+
+    internal async Task<PrefillResult> PrefillAsync(
         PrefillOptions? options = null,
+        PrefillRun? run = null,
         CancellationToken cancellationToken = default)
     {
         ThrowIfNotInitialized();
@@ -381,7 +385,9 @@ public sealed class EpicPrefillApi : IDisposable
             await _epicManager!.DownloadMultipleAppsAsync(
                 order: ResolvePrefillOrder(options),
                 force: options.Force,
-                cancellationToken: cancellationToken);
+                cancellationToken: cancellationToken,
+                manualIds: run?.Options.AppIds?.ToList(),
+                run: run);
 
             _progress.OnOperationCompleted("Prefill operation", timer.Elapsed);
 
@@ -396,9 +402,13 @@ public sealed class EpicPrefillApi : IDisposable
             _progress.OnLog(LogLevel.Info, "Prefill operation cancelled");
             throw;
         }
+        catch (EpicLoginException)
+        {
+            throw;
+        }
         catch (Exception ex)
         {
-            _progress.OnError("Prefill operation failed", ex);
+            if (run == null) { _progress.OnError("Prefill operation failed", ex); }
             return new PrefillResult
             {
                 Success = false,
@@ -495,6 +505,7 @@ public sealed class EpicPrefillApi : IDisposable
         if (_isDisposed) return;
 
         Shutdown();
+        _epicManager?.Dispose();
         _isDisposed = true;
     }
 
@@ -506,83 +517,6 @@ public sealed class EpicPrefillApi : IDisposable
 
     private void ThrowIfDisposed()
     {
-        if (_isDisposed)
-            throw new ObjectDisposedException(nameof(EpicPrefillApi));
+        ObjectDisposedException.ThrowIf(_isDisposed, this);
     }
-}
-
-public class PrefillOptions
-{
-    public bool DownloadAllOwnedGames { get; set; }
-    public bool Force { get; set; }
-
-    /// <summary>The "Recent" preset. Epic has no recently-played API, so this gracefully falls back to all owned games.</summary>
-    public bool Recent { get; set; }
-
-    /// <summary>The "Top" preset: owned games ordered by cumulative Epic playtime, most-played first.</summary>
-    public bool Top { get; set; }
-}
-
-public class PrefillResult
-{
-    public bool Success { get; init; }
-    public string? ErrorMessage { get; init; }
-    public TimeSpan TotalTime { get; init; }
-}
-
-public class ClearCacheResult
-{
-    public bool Success { get; init; }
-    public int FileCount { get; init; }
-    public long BytesCleared { get; init; }
-    public string? Message { get; init; }
-}
-
-public class AppStatus
-{
-    public string AppId { get; init; } = "";
-    public string Name { get; init; } = "";
-    public long DownloadSize { get; init; }
-    public bool IsUpToDate { get; init; }
-}
-
-public class SelectedAppsStatus
-{
-    public List<AppStatus> Apps { get; init; } = new();
-    public long TotalDownloadSize { get; init; }
-    public string? Message { get; init; }
-}
-
-public class OwnedGame
-{
-    public string AppId { get; init; } = string.Empty;
-    public string Name { get; init; } = string.Empty;
-    public List<KeyImage>? KeyImages { get; init; }
-}
-
-public class CacheStatusResult
-{
-    public List<AppCacheStatus> Apps { get; init; } = new();
-    public string? Message { get; init; }
-}
-
-public class AppCacheStatus
-{
-    public string AppId { get; init; } = "";
-    public string Name { get; init; } = "";
-    public bool IsUpToDate { get; init; }
-}
-
-public class CdnInfo
-{
-    public string AppId { get; init; } = string.Empty;
-    public string Name { get; init; } = string.Empty;
-    public string CdnHost { get; init; } = string.Empty;
-    public string ChunkBaseUrl { get; init; } = string.Empty;
-}
-
-public class CdnInfoResult
-{
-    public List<CdnInfo> Apps { get; init; } = new();
-    public string? Message { get; init; }
 }

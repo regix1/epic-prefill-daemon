@@ -5,6 +5,7 @@
         //TODO move the manifests into a subfolder in the cache dir
         private readonly IAnsiConsole _ansiConsole;
         private readonly HttpClientFactory _httpClientFactory;
+        private static readonly System.Collections.Concurrent.ConcurrentDictionary<string, SemaphoreSlim> Gates = new(StringComparer.OrdinalIgnoreCase);
 
         public ManifestHandler(IAnsiConsole ansiConsole, HttpClientFactory httpClientFactory)
         {
@@ -24,45 +25,63 @@
         {
             // Load from disk if manifest already exists
             var cachedFileName = Path.Combine(AppConfig.TempDir, $"{appInfo.AppId}-{appInfo.BuildVersion}");
-            if (ManifestIsCached(cachedFileName))
+            var gate = Gates.GetOrAdd(Path.GetFullPath(cachedFileName), _ => new SemaphoreSlim(1, 1));
+            await gate.WaitAsync(cancellationToken);
+            try
             {
-                return await File.ReadAllBytesAsync(cachedFileName, cancellationToken);
+                if (ManifestIsCached(cachedFileName))
+                {
+                    return await File.ReadAllBytesAsync(cachedFileName, cancellationToken);
+                }
+
+                byte[] responseAsBytes = null;
+                await _ansiConsole.StatusSpinner().StartAsync("Downloading manifest", async ctx =>
+                {
+                    var timer = Stopwatch.StartNew();
+                    using var request = new HttpRequestMessage(HttpMethod.Get, manifestDownloadUrl.ManifestDownloadUrlWithParams);
+
+                    using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
+                    using var permit = PrefillRun.Current == null ? null : await PrefillRun.Current.AcquireAsync(cancellationToken);
+                    using var response = await httpClient.SendAsync(
+                        request,
+                        HttpCompletionOption.ResponseHeadersRead,
+                        cancellationToken);
+                    response.EnsureSuccessStatusCode();
+
+                    // Sent with ResponseHeadersRead, so the body read sits outside HttpClient.Timeout and needs
+                    // its own bound.  Without it a CDN edge that goes quiet after the headers stalls the
+                    // prefill before a single chunk is queued.
+                    using var timeout = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken);
+                    timeout.CancelAfter(AppConfig.DefaultRequestTimeout);
+                    try
+                    {
+                        responseAsBytes = await response.Content.ReadAsByteArrayAsync(timeout.Token);
+                    }
+                    catch (OperationCanceledException) when (!cancellationToken.IsCancellationRequested)
+                    {
+                        throw new TimeoutException(
+                            $"{manifestDownloadUrl.ManifestDownloadUri.Host} stopped sending the manifest for {AppConfig.DefaultRequestTimeout.TotalSeconds} seconds.  " +
+                            "The download cannot start until the manifest arrives, so check that the cache and its upstream CDN are reachable.");
+                    }
+
+                    // Cache to disk
+                    var temporary = cachedFileName + "." + Guid.NewGuid().ToString("N") + ".tmp";
+                    try
+                    {
+                        await File.WriteAllBytesAsync(temporary, responseAsBytes, cancellationToken);
+                        cancellationToken.ThrowIfCancellationRequested();
+                        File.Move(temporary, cachedFileName, true);
+                    }
+                    finally
+                    {
+                        if (File.Exists(temporary)) { File.Delete(temporary); }
+                    }
+
+                    _ansiConsole.LogMarkupLine("Downloaded manifest", timer);
+                });
+                return responseAsBytes;
             }
-
-            byte[] responseAsBytes = null;
-            await _ansiConsole.StatusSpinner().StartAsync("Downloading manifest", async ctx =>
-            {
-                var timer = Stopwatch.StartNew();
-                using var request = new HttpRequestMessage(HttpMethod.Get, manifestDownloadUrl.ManifestDownloadUrlWithParams);
-
-                using var httpClient = await _httpClientFactory.GetHttpClientAsync(cancellationToken);
-                using var response = await httpClient.SendAsync(
-                    request,
-                    HttpCompletionOption.ResponseHeadersRead,
-                    cancellationToken);
-                response.EnsureSuccessStatusCode();
-
-                // Sent with ResponseHeadersRead, so the body read sits outside HttpClient.Timeout and needs
-                // its own bound.  Without it a CDN edge that goes quiet after the headers stalls the
-                // prefill before a single chunk is queued.
-                try
-                {
-                    responseAsBytes = await response.Content.ReadAsByteArrayAsync(cancellationToken)
-                        .WaitAsync(AppConfig.DefaultRequestTimeout, cancellationToken);
-                }
-                catch (TimeoutException)
-                {
-                    throw new TimeoutException(
-                        $"{manifestDownloadUrl.ManifestDownloadUri.Host} stopped sending the manifest for {AppConfig.DefaultRequestTimeout.TotalSeconds} seconds.  " +
-                        "The download cannot start until the manifest arrives, so check that the cache and its upstream CDN are reachable.");
-                }
-
-                // Cache to disk
-                await File.WriteAllBytesAsync(cachedFileName, responseAsBytes, cancellationToken);
-
-                _ansiConsole.LogMarkupLine("Downloaded manifest", timer);
-            });
-            return responseAsBytes;
+            finally { gate.Release(); }
         }
 
         private bool ManifestIsCached(string manifestFileName)

@@ -1,5 +1,6 @@
 ﻿namespace EpicPrefill.Handlers
 {
+#nullable enable annotations
     //TODO document
     public class HttpClientFactory
     {
@@ -29,12 +30,13 @@
             {
                 await _userAccountManager.LoginAsync(cancellationToken);
             }
+            var token = _userAccountManager.OauthToken ?? throw new EpicLoginException("auth-lost");
 
             var client = _handler == null
                 ? new HttpClient()
                 : new HttpClient(_handler, disposeHandler: false);
             client.Timeout = AppConfig.DefaultRequestTimeout;
-            client.DefaultRequestHeaders.Add("Authorization", $"bearer {_userAccountManager.OauthToken.AccessToken}");
+            client.DefaultRequestHeaders.Add("Authorization", $"bearer {token.AccessToken}");
             client.DefaultRequestHeaders.Add("User-Agent", AppConfig.DefaultUserAgent);
             return client;
         }

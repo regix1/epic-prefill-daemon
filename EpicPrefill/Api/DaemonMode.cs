@@ -11,7 +11,7 @@ public static class DaemonMode
         string socketPath = "/responses/daemon.sock",
         CancellationToken cancellationToken = default)
     {
-        Console.WriteLine($"Starting EpicPrefill daemon on Unix socket {socketPath}");
+        AnsiConsole.WriteLine($"Starting EpicPrefill daemon on Unix socket {socketPath}");
 
         using var socketInterface = new SocketCommandInterface(socketPath);
 
@@ -26,11 +26,11 @@ public static class DaemonMode
         }
         catch (OperationCanceledException)
         {
-            Console.WriteLine("Daemon shutdown requested...");
+            AnsiConsole.WriteLine("Daemon shutdown requested...");
         }
 
         await socketInterface.StopAsync();
-        Console.WriteLine("Daemon stopped.");
+        AnsiConsole.WriteLine("Daemon stopped.");
     }
 
     /// <summary>
@@ -46,11 +46,11 @@ public static class DaemonMode
             return null;
         }
 
-        Console.WriteLine($"PREFILL_MAX_LIFETIME_SECONDS={seconds}: daemon will self-shut down after {seconds}s.");
+        AnsiConsole.WriteLine($"PREFILL_MAX_LIFETIME_SECONDS={seconds}: daemon will self-shut down after {seconds}s.");
 
         return new Timer(_ =>
         {
-            Console.WriteLine($"Max lifetime of {seconds}s reached. Initiating clean shutdown...");
+            AnsiConsole.WriteLine($"Max lifetime of {seconds}s reached. Initiating clean shutdown...");
             try { lifetimeCts.Cancel(); }
             catch (ObjectDisposedException) { /* shutting down already */ }
         }, null, TimeSpan.FromSeconds(seconds), Timeout.InfiniteTimeSpan);
@@ -60,7 +60,7 @@ public static class DaemonMode
         int port,
         CancellationToken cancellationToken = default)
     {
-        Console.WriteLine($"Starting EpicPrefill daemon on TCP port {port}");
+        AnsiConsole.WriteLine($"Starting EpicPrefill daemon on TCP port {port}");
 
         using var socketInterface = new SocketCommandInterface(port);
 
@@ -75,73 +75,10 @@ public static class DaemonMode
         }
         catch (OperationCanceledException)
         {
-            Console.WriteLine("Daemon shutdown requested...");
+            AnsiConsole.WriteLine("Daemon shutdown requested...");
         }
 
         await socketInterface.StopAsync();
-        Console.WriteLine("Daemon stopped.");
+        AnsiConsole.WriteLine("Daemon stopped.");
     }
-}
-
-public class PrefillProgressUpdate
-{
-    [System.Text.Json.Serialization.JsonPropertyName("state")]
-    public string State { get; set; } = "idle";
-
-    [System.Text.Json.Serialization.JsonPropertyName("message")]
-    public string? Message { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("currentAppId")]
-    public string? CurrentAppId { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("currentAppName")]
-    public string? CurrentAppName { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("totalBytes")]
-    public long TotalBytes { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("bytesDownloaded")]
-    public long BytesDownloaded { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("percentComplete")]
-    public double PercentComplete { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("bytesPerSecond")]
-    public double BytesPerSecond { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("elapsed")]
-    public TimeSpan Elapsed { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("elapsedSeconds")]
-    public double ElapsedSeconds => Elapsed.TotalSeconds;
-
-    [System.Text.Json.Serialization.JsonPropertyName("result")]
-    public string? Result { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("errorMessage")]
-    public string? ErrorMessage { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("totalApps")]
-    public int TotalApps { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("updatedApps")]
-    public int UpdatedApps { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("alreadyUpToDate")]
-    public int AlreadyUpToDate { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("failedApps")]
-    public int FailedApps { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("totalBytesTransferred")]
-    public long TotalBytesTransferred { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("totalTime")]
-    public TimeSpan TotalTime { get; set; }
-
-    [System.Text.Json.Serialization.JsonPropertyName("totalTimeSeconds")]
-    public double TotalTimeSeconds => TotalTime.TotalSeconds;
-
-    [System.Text.Json.Serialization.JsonPropertyName("updatedAt")]
-    public DateTime UpdatedAt { get; set; }
 }
