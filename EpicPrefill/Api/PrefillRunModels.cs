@@ -15,6 +15,11 @@ namespace EpicPrefill.Api;
 
 public sealed record PrefillStart(bool Success, string RunId, string DaemonInstanceId, string State);
 
+public sealed class RefreshTokenLogin
+{
+    public string RefreshToken { get; init; } = string.Empty;
+}
+
 public class PrefillOptions
 {
     public bool DownloadAllOwnedGames { get; set; }

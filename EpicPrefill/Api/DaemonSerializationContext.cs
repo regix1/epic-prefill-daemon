@@ -10,6 +10,7 @@ namespace EpicPrefill.Api;
 [JsonSerializable(typeof(CommandResponse))]
 [JsonSerializable(typeof(CredentialChallenge))]
 [JsonSerializable(typeof(EncryptedCredentialResponse))]
+[JsonSerializable(typeof(RefreshTokenLogin))]
 [JsonSerializable(typeof(List<OwnedGame>))]
 [JsonSerializable(typeof(List<string>))]
 [JsonSerializable(typeof(PrefillResult))]

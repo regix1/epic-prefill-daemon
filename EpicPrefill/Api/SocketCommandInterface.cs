@@ -21,6 +21,7 @@ public sealed class SocketCommandInterface : IDisposable
     private readonly ItemClaims _claims = new();
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PrefillRun> _runs = new(StringComparer.Ordinal);
     private readonly Func<PrefillOptions, PrefillRun?, CancellationToken, Task<PrefillResult>>? _execute;
+    private readonly Func<string, CancellationToken, Task>? _loginWithRefreshToken;
     private CancellationTokenSource? _loginCts;
     private EpicPrefillApi? _api;
     private Task? _loginTask;
@@ -51,7 +52,8 @@ public sealed class SocketCommandInterface : IDisposable
         "shutdown",
         "cancel-login",
         "provide-credential",
-        "provide-auto-login"
+        "provide-auto-login",
+        "get-auto-login-challenge"
     };
 
     public SocketCommandInterface(string socketPath)
@@ -85,6 +87,12 @@ public sealed class SocketCommandInterface : IDisposable
     {
         _execute = execute;
         _isLoggedIn = true;
+    }
+
+    internal SocketCommandInterface(int tcpPort, Func<string, CancellationToken, Task> loginWithRefreshToken)
+        : this(tcpPort)
+    {
+        _loginWithRefreshToken = loginWithRefreshToken;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -128,6 +136,7 @@ public sealed class SocketCommandInterface : IDisposable
             {
                 "login" => await HandleLoginAsync(request, cancellationToken),
                 "provide-auto-login" => HandleProvideAutoLogin(request),
+                "get-auto-login-challenge" => HandleGetAutoLoginChallenge(request),
                 "logout" => await HandleLogoutAsync(request, cancellationToken),
                 "cancel-login" => await HandleCancelLoginAsync(request),
                 "cancel-prefill" => await HandleCancelPrefillAsync(request, cancellationToken),
@@ -291,11 +300,30 @@ public sealed class SocketCommandInterface : IDisposable
         });
     }
 
+    private CommandResponse HandleGetAutoLoginChallenge(CommandRequest request)
+    {
+        if (_isLoggedIn)
+        {
+            return new CommandResponse { Id = request.Id, Success = false, Error = "Already logged in" };
+        }
+
+        if (_isLoggingIn)
+        {
+            return new CommandResponse { Id = request.Id, Success = false, Error = "Login already in progress" };
+        }
+
+        return new CommandResponse
+        {
+            Id = request.Id,
+            Success = true,
+            Data = SecureCredentialExchange.CreateChallenge("refresh-token"),
+            CompletedAt = DateTime.UtcNow
+        };
+    }
+
     /// <summary>
-    /// Non-interactive (headless) login. Mirrors the Steam daemon's 'provide-auto-login': requests an encrypted
-    /// refresh token from the client over the SAME secure channel used by interactive 'provide-credential',
-    /// performs the OAuth refresh grant, and persists the resulting full token to Config/userAccount.json.
-    /// A subsequent (and here, automatic) login then reuses the persisted session without user interaction.
+    /// Non-interactive login receives the encrypted refresh token in the command itself, avoiding the
+    /// interactive credential wait used by manual login.
     /// </summary>
     private CommandResponse HandleProvideAutoLogin(CommandRequest request)
     {
@@ -325,6 +353,57 @@ public sealed class SocketCommandInterface : IDisposable
             };
         }
 
+        var encrypted = ReadCredential(request);
+        if (encrypted is null)
+        {
+            return new CommandResponse
+            {
+                Id = request.Id,
+                Success = false,
+                Error = "Missing required auto-login parameters",
+                CompletedAt = DateTime.UtcNow
+            };
+        }
+
+        var serializedLogin = SecureCredentialExchange.DecryptCredential(encrypted);
+        if (serializedLogin is null)
+        {
+            return new CommandResponse
+            {
+                Id = request.Id,
+                Success = false,
+                Error = "Saved login credential could not be decrypted",
+                CompletedAt = DateTime.UtcNow
+            };
+        }
+
+        RefreshTokenLogin? login;
+        try
+        {
+            login = JsonSerializer.Deserialize(serializedLogin, DaemonSerializationContext.Default.RefreshTokenLogin);
+        }
+        catch (JsonException)
+        {
+            return new CommandResponse
+            {
+                Id = request.Id,
+                Success = false,
+                Error = "Saved login credential was not valid",
+                CompletedAt = DateTime.UtcNow
+            };
+        }
+
+        if (string.IsNullOrWhiteSpace(login?.RefreshToken))
+        {
+            return new CommandResponse
+            {
+                Id = request.Id,
+                Success = false,
+                Error = "Saved login did not contain a refresh token",
+                CompletedAt = DateTime.UtcNow
+            };
+        }
+
         _progress.OnLog(LogLevel.Info, "Starting headless (auto) login via socket...");
         _isLoggingIn = true;
 
@@ -340,15 +419,16 @@ public sealed class SocketCommandInterface : IDisposable
         {
             try
             {
-                // Reuse the existing encrypted credential channel to receive the refresh token.
-                var refreshToken = await _authProvider.GetRefreshTokenAsync(loginCts.Token);
-
-                // Exchange the refresh token for a full token and persist it (encrypted) to disk.
-                var accountManager = Handlers.UserAccountManager.LoadFromFile(new ApiConsoleAdapter(_authProvider, _progress), _authProvider);
-                await accountManager.ImportRefreshTokenAsync(refreshToken, loginCts.Token);
-
-                // With a valid persisted session, a normal login completes without further interaction.
-                await api.InitializeAsync(loginCts.Token);
+                if (_loginWithRefreshToken is not null)
+                {
+                    await _loginWithRefreshToken(login.RefreshToken, loginCts.Token);
+                }
+                else
+                {
+                    var accountManager = Handlers.UserAccountManager.LoadFromFile(new ApiConsoleAdapter(_authProvider, _progress), _authProvider);
+                    await accountManager.ImportRefreshTokenAsync(login.RefreshToken, loginCts.Token);
+                    await api.InitializeAsync(loginCts.Token);
+                }
 
                 if (loginGeneration != Interlocked.Read(ref _loginGeneration))
                 {
@@ -555,14 +635,8 @@ public sealed class SocketCommandInterface : IDisposable
 
     private CommandResponse HandleProvideCredential(CommandRequest request)
     {
-        var challengeId = request.Parameters?.GetValueOrDefault("challengeId");
-        var clientPublicKey = request.Parameters?.GetValueOrDefault("clientPublicKey");
-        var encryptedCredential = request.Parameters?.GetValueOrDefault("encryptedCredential");
-        var nonce = request.Parameters?.GetValueOrDefault("nonce");
-        var tag = request.Parameters?.GetValueOrDefault("tag");
-
-        if (string.IsNullOrEmpty(challengeId) || string.IsNullOrEmpty(clientPublicKey) ||
-            string.IsNullOrEmpty(encryptedCredential) || string.IsNullOrEmpty(nonce) || string.IsNullOrEmpty(tag))
+        var response = ReadCredential(request);
+        if (response is null)
         {
             return new CommandResponse
             {
@@ -572,15 +646,6 @@ public sealed class SocketCommandInterface : IDisposable
                 CompletedAt = DateTime.UtcNow
             };
         }
-
-        var response = new EncryptedCredentialResponse
-        {
-            ChallengeId = challengeId,
-            ClientPublicKey = clientPublicKey,
-            EncryptedCredential = encryptedCredential,
-            Nonce = nonce,
-            Tag = tag
-        };
 
         var accepted = _authProvider.ReceiveCredential(response);
         if (!accepted)
@@ -603,6 +668,30 @@ public sealed class SocketCommandInterface : IDisposable
             Success = true,
             Message = "Credential received",
             CompletedAt = DateTime.UtcNow
+        };
+    }
+
+    private static EncryptedCredentialResponse? ReadCredential(CommandRequest request)
+    {
+        var challengeId = request.Parameters?.GetValueOrDefault("challengeId");
+        var clientPublicKey = request.Parameters?.GetValueOrDefault("clientPublicKey");
+        var encryptedCredential = request.Parameters?.GetValueOrDefault("encryptedCredential");
+        var nonce = request.Parameters?.GetValueOrDefault("nonce");
+        var tag = request.Parameters?.GetValueOrDefault("tag");
+
+        if (string.IsNullOrEmpty(challengeId) || string.IsNullOrEmpty(clientPublicKey) ||
+            string.IsNullOrEmpty(encryptedCredential) || string.IsNullOrEmpty(nonce) || string.IsNullOrEmpty(tag))
+        {
+            return null;
+        }
+
+        return new EncryptedCredentialResponse
+        {
+            ChallengeId = challengeId,
+            ClientPublicKey = clientPublicKey,
+            EncryptedCredential = encryptedCredential,
+            Nonce = nonce,
+            Tag = tag
         };
     }
 

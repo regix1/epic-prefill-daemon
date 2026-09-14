@@ -72,7 +72,9 @@ public sealed class SocketAuthProvider : IEpicAuthProvider, IDisposable
         await _credentialLock.WaitAsync(cancellationToken);
         try
         {
-            _pendingCredential = new TaskCompletionSource<EncryptedCredentialResponse>();
+            var pendingCredential = new TaskCompletionSource<EncryptedCredentialResponse>(
+                TaskCreationOptions.RunContinuationsAsynchronously);
+            _pendingCredential = pendingCredential;
 
             var challenge = SecureCredentialExchange.CreateChallenge(credentialType, authUrl);
             _currentChallengeId = challenge.ChallengeId;
@@ -86,11 +88,11 @@ public sealed class SocketAuthProvider : IEpicAuthProvider, IDisposable
             // Wait for credential with timeout
             using var timeoutCts = new CancellationTokenSource(TimeSpan.FromMinutes(5));
             using var linkedCts = CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, timeoutCts.Token);
-            using var reg = linkedCts.Token.Register(() => _pendingCredential.TrySetCanceled());
+            using var reg = linkedCts.Token.Register(() => pendingCredential.TrySetCanceled());
 
             try
             {
-                var encryptedResponse = await _pendingCredential.Task;
+                var encryptedResponse = await pendingCredential.Task;
 
                 var credential = SecureCredentialExchange.DecryptCredential(encryptedResponse);
                 if (credential == null)
