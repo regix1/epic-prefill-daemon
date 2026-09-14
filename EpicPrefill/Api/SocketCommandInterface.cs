@@ -460,7 +460,8 @@ public sealed class SocketCommandInterface : IDisposable
 
     private async Task<CommandResponse> HandleCancelLoginAsync(CommandRequest request)
     {
-        if (!_isLoggingIn)
+        var loginTask = _loginTask;
+        if (!_isLoggingIn && (loginTask == null || loginTask.IsCompleted))
         {
             return new CommandResponse { Id = request.Id, Success = true, Message = "No login in progress" };
         }
@@ -478,6 +479,28 @@ public sealed class SocketCommandInterface : IDisposable
             if (_loginCts != null) await _loginCts.CancelAsync();
         }
         catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error cancelling login CTS: {ex.Message}"); }
+
+        if (loginTask != null)
+        {
+            try
+            {
+                await loginTask.WaitAsync(LogoutLoginTaskTimeout);
+            }
+            catch (OperationCanceledException)
+            {
+                // Cancellation is the expected completion for a task waiting on a credential.
+            }
+            catch (TimeoutException)
+            {
+                return new CommandResponse
+                {
+                    Id = request.Id,
+                    Success = false,
+                    Error = "Login cleanup did not finish",
+                    CompletedAt = DateTime.UtcNow
+                };
+            }
+        }
 
         CleanupApiInstance();
         await BroadcastStatusAsync("awaiting-login", "Login cancelled - ready for new attempt");
