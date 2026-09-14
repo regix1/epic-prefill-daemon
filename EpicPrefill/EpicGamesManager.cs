@@ -223,12 +223,21 @@
             cancellationToken.ThrowIfCancellationRequested();
 
             // Only download the app if it isn't up to date
-            if (force == false && _downloadArgs.Force == false && _appInfoHandler.AppIsUpToDate(app))
+            var isCached = _progress is PrefillRun run
+                ? run.IsCached(app.AppId, app.BuildVersion)
+                : _appInfoHandler.AppIsUpToDate(app);
+            if (force == false && _downloadArgs.Force == false && isCached)
             {
                 _prefillSummaryResult.AlreadyUpToDate++;
-                var cachedAppInfo = new AppDownloadInfo { AppId = app.AppId, Name = app.Title, TotalBytes = 0 };
-                _progress.OnAppStarted(cachedAppInfo);
-                _progress.OnAppCompleted(cachedAppInfo, AppDownloadResult.AlreadyUpToDate);
+                var cachedApp = new AppDownloadInfo
+                {
+                    AppId = app.AppId,
+                    Name = app.Title,
+                    TotalBytes = 0,
+                    CacheRevision = app.BuildVersion
+                };
+                _progress.OnAppStarted(cachedApp);
+                _progress.OnAppCompleted(cachedApp, AppDownloadResult.AlreadyUpToDate);
                 return;
             }
 
@@ -285,7 +294,8 @@
                 AppId = app.AppId,
                 Name = app.Title,
                 TotalBytes = (long)totalBytes.Bytes,
-                ChunkCount = chunkDownloadQueue.Count
+                ChunkCount = chunkDownloadQueue.Count,
+                CacheRevision = app.BuildVersion
             };
             _progress.OnAppStarted(appDownloadInfo);
 

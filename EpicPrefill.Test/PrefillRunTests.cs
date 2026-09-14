@@ -70,6 +70,38 @@ public sealed class PrefillRunTests
     }
 
     [Fact]
+    public async Task CacheRevisionControlsSkipAndSurvivesOperationRecovery()
+    {
+        var protocol = new PrefillProtocol(3);
+        using var budget = new RequestBudget(3);
+        var run = new PrefillRun("run", protocol, new RunOptions
+        {
+            AppIds = ["A"],
+            CachedApps = [new CachedAppInput { AppId = "a", Revision = "revision-1" }],
+            MaxConcurrency = 1
+        }, budget, new ItemClaims(), NullProgress.Instance);
+
+        Assert.True(run.IsCached("A", "revision-1"));
+        Assert.False(run.IsCached("A", "revision-2"));
+        await run.ExecuteAsync(_ =>
+        {
+            run.OnAppCompleted(new AppDownloadInfo
+            {
+                AppId = "A",
+                CacheRevision = "revision-1"
+            }, AppDownloadResult.Success);
+            return Task.CompletedTask;
+        }, CancellationToken.None);
+
+        Assert.Equal("revision-1", Assert.Single(run.Progress.GetPage(0, 10).Items).CacheRevision);
+        var changed = run.Options with
+        {
+            CachedApps = [new CachedAppInput { AppId = "A", Revision = "revision-2" }]
+        };
+        Assert.NotEqual(PrefillProtocol.Fingerprint(run.Options), PrefillProtocol.Fingerprint(changed));
+    }
+
+    [Fact]
     public async Task ProtocolAdmissionReplayRecoveryAndLegacyExclusionUseTheRealCommandHandler()
     {
         var release = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);

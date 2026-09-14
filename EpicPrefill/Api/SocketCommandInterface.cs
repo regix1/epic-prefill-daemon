@@ -752,6 +752,10 @@ public sealed class SocketCommandInterface : IDisposable
                 ?? throw new ArgumentException("appIds must be an array");
             ids = ids.Select(id => id.ToUpperInvariant()).ToList();
         }
+        var cachedApps = parameters.TryGetValue("cachedApps", out var cachedJson)
+            ? JsonSerializer.Deserialize(cachedJson, DaemonSerializationContext.Default.ListCachedAppInput)
+                ?? throw new ArgumentException("cachedApps must be an array")
+            : [];
         var maximum = parameters.TryGetValue("maxConcurrency", out var rawMaximum)
             ? int.Parse(rawMaximum, System.Globalization.CultureInfo.InvariantCulture) : _protocol.MaxConcurrentRequests;
         int? topCount = parameters.TryGetValue("topCount", out var rawCount)
@@ -763,6 +767,7 @@ public sealed class SocketCommandInterface : IDisposable
             Selection = selection,
             MaxConcurrency = maximum,
             TopCount = topCount,
+            CachedApps = cachedApps,
             Force = bool.TryParse(parameters.GetValueOrDefault("force"), out var force) && force
         });
     }
@@ -1055,12 +1060,12 @@ public sealed class SocketCommandInterface : IDisposable
     {
         EnsureLoggedIn();
 
-        // Accept app IDs as a JSON string list in "appIds" parameter
-        List<string> appIds;
-        var appIdsJson = request.Parameters?.GetValueOrDefault("appIds");
-        if (!string.IsNullOrEmpty(appIdsJson))
+        List<CachedAppInput> cachedApps;
+        var cachedAppsJson = request.Parameters?.GetValueOrDefault("cachedApps");
+        if (!string.IsNullOrEmpty(cachedAppsJson))
         {
-            appIds = JsonSerializer.Deserialize(appIdsJson, DaemonSerializationContext.Default.ListString) ?? new List<string>();
+            cachedApps = JsonSerializer.Deserialize(cachedAppsJson, DaemonSerializationContext.Default.ListCachedAppInput)
+                ?? throw new ArgumentException("cachedApps must be an array");
         }
         else
         {
@@ -1075,7 +1080,7 @@ public sealed class SocketCommandInterface : IDisposable
             };
         }
 
-        var status = await _api!.CheckCacheStatusAsync(appIds, cancellationToken);
+        var status = await _api!.CheckCacheStatusAsync(cachedApps, cancellationToken);
 
         return new CommandResponse
         {
@@ -1300,6 +1305,7 @@ public sealed class SocketCommandInterface : IDisposable
                 CurrentAppId = app.AppId,
                 CurrentAppName = app.Name,
                 TotalBytes = app.TotalBytes,
+                CacheRevision = app.CacheRevision,
                 BytesDownloaded = bytesDownloaded,
                 Result = result.ToString(),
                 UpdatedAt = DateTime.UtcNow

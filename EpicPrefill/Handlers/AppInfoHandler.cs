@@ -57,7 +57,8 @@
                         {
                             AppId = appInfo.AppId,
                             Name = appInfo.Title,
-                            TotalBytes = totalBytes
+                            TotalBytes = totalBytes,
+                            CacheRevision = appInfo.BuildVersion
                         }, Commit);
                     }
                     Commit();

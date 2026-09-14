@@ -287,12 +287,12 @@ public sealed class EpicPrefillApi : IDisposable
     /// Checks cache status by comparing app build versions against previously downloaded versions.
     /// Returns which apps are up-to-date and which need updating.
     /// </summary>
-    public async Task<CacheStatusResult> CheckCacheStatusAsync(List<string> appIds, CancellationToken cancellationToken = default)
+    public async Task<CacheStatusResult> CheckCacheStatusAsync(List<CachedAppInput> cachedApps, CancellationToken cancellationToken = default)
     {
         ThrowIfNotInitialized();
         ThrowIfDisposed();
 
-        if (appIds.Count == 0)
+        if (cachedApps.Count == 0)
         {
             return new CacheStatusResult
             {
@@ -304,20 +304,22 @@ public sealed class EpicPrefillApi : IDisposable
         try
         {
             var allGames = await _epicManager!.GetAvailableGamesAsync(cancellationToken);
-            var gamesByAppId = allGames.ToDictionary(g => g.AppId, g => g);
+            var gamesByAppId = allGames.ToDictionary(g => g.AppId, g => g, StringComparer.OrdinalIgnoreCase);
 
             var apps = new List<AppCacheStatus>();
-            foreach (var appId in appIds.Distinct())
+            foreach (var cachedApp in cachedApps
+                         .Where(app => !string.IsNullOrWhiteSpace(app.Revision))
+                         .DistinctBy(app => app.AppId, StringComparer.OrdinalIgnoreCase))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
-                if (gamesByAppId.TryGetValue(appId, out var game))
+                if (gamesByAppId.TryGetValue(cachedApp.AppId, out var game))
                 {
                     apps.Add(new AppCacheStatus
                     {
-                        AppId = appId,
+                        AppId = cachedApp.AppId,
                         Name = game.Title,
-                        IsUpToDate = _epicManager.IsAppUpToDate(game)
+                        IsUpToDate = StringComparer.Ordinal.Equals(cachedApp.Revision, game.BuildVersion)
                     });
                 }
             }

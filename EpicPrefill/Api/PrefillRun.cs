@@ -29,6 +29,10 @@ public sealed class PrefillRun : IPrefillProgress
     public RunOptions Options { get; }
     public RunProgress Progress { get; }
 
+    public bool IsCached(string appId, string revision)
+        => Options.CachedApps.Any(app => string.Equals(app.AppId, appId, StringComparison.OrdinalIgnoreCase)
+            && StringComparer.Ordinal.Equals(app.Revision, revision));
+
     public async Task ExecuteAsync(Func<CancellationToken, Task> execute, CancellationToken cancellationToken)
     {
         var previous = Scope.Value;
@@ -87,6 +91,7 @@ public sealed class PrefillRun : IPrefillProgress
             Result = item?.Result,
             Reason = snapshot.Reason ?? item?.Reason,
             TotalBytes = item?.TotalBytes ?? 0,
+            CacheRevision = item?.CacheRevision,
             BytesDownloaded = item?.BytesTransferred ?? 0,
             TotalBytesTransferred = snapshot.BytesTransferred,
             TotalApps = snapshot.TotalApps,
@@ -116,6 +121,7 @@ public sealed class PrefillRun : IPrefillProgress
                 Name = app.Name,
                 State = "downloading",
                 TotalBytes = app.TotalBytes,
+                CacheRevision = app.CacheRevision,
                 BytesTransferred = _bytes.GetValueOrDefault(app.AppId.ToUpperInvariant())
             });
         }
@@ -163,6 +169,7 @@ public sealed class PrefillRun : IPrefillProgress
                 Result = outcome,
                 Reason = result == AppDownloadResult.Skipped ? "skippedOverlap" : null,
                 TotalBytes = app.TotalBytes,
+                CacheRevision = app.CacheRevision,
                 BytesTransferred = _bytes.GetValueOrDefault(app.AppId.ToUpperInvariant())
             };
             return commit == null ? Progress.UpdateItem(item) : Progress.TryCommitItem(item, commit);
