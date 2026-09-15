@@ -13,6 +13,7 @@ namespace EpicPrefill.Api;
 [JsonSerializable(typeof(RefreshTokenLogin))]
 [JsonSerializable(typeof(List<OwnedGame>))]
 [JsonSerializable(typeof(List<string>))]
+[JsonSerializable(typeof(List<CachedAppInput>))]
 [JsonSerializable(typeof(PrefillResult))]
 [JsonSerializable(typeof(StatusData))]
 [JsonSerializable(typeof(PrefillProgressUpdate))]
