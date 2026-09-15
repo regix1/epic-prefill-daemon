@@ -36,7 +36,7 @@ public sealed class CacheCommitTests
 
             Assert.Equal(1, commits);
             Assert.Equal(before, File.ReadAllText(path));
-            Assert.False(handler.AppIsUpToDate(app));
+            Assert.Null(handler.AppIsUpToDate(app));
             Assert.Single(directory.GetFiles());
             Assert.Equal("cancelled", run.Progress.Snapshot.State);
             Assert.Equal(0, run.Progress.Snapshot.CompletedApps);
@@ -84,6 +84,11 @@ public sealed class CacheCommitTests
             await run.Progress.CompleteAsync();
 
             Assert.True(handler.AppIsUpToDate(app));
+            Assert.False(handler.AppIsUpToDate(new AppInfo
+            {
+                AppId = app.AppId,
+                BuildVersion = "other-version"
+            }));
             Assert.True(new AppInfoHandler(ConcurrentPrefillTests.CreateConsole(), path,
                 (source, target) => File.Move(source, target, true)).AppIsUpToDate(app));
             Assert.Single(directory.GetFiles());
@@ -133,7 +138,7 @@ public sealed class CacheCommitTests
             }, CancellationToken.None);
 
             Assert.Equal(before, File.ReadAllText(path));
-            Assert.False(handler.AppIsUpToDate(app));
+            Assert.Null(handler.AppIsUpToDate(app));
             Assert.Single(directory.GetFiles());
             Assert.Equal("failed", run.Progress.Snapshot.State);
             Assert.Equal(0, run.Progress.Snapshot.CompletedApps);
@@ -182,7 +187,7 @@ public sealed class CacheCommitTests
             fail = true;
             Assert.Throws<IOException>(() => handler.MarkDownloadAsSuccessful(second));
             Assert.True(handler.AppIsUpToDate(first));
-            Assert.False(handler.AppIsUpToDate(second));
+            Assert.Null(handler.AppIsUpToDate(second));
             Assert.Equal(before, File.ReadAllText(path));
             Assert.Single(directory.GetFiles());
         }

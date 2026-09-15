@@ -226,7 +226,7 @@
             var isCached = _progress is PrefillRun run
                 ? run.IsCached(app.AppId, app.BuildVersion)
                 : _appInfoHandler.AppIsUpToDate(app);
-            if (force == false && _downloadArgs.Force == false && isCached)
+            if (force == false && _downloadArgs.Force == false && isCached == true)
             {
                 _prefillSummaryResult.AlreadyUpToDate++;
                 var cachedApp = new AppDownloadInfo
@@ -352,7 +352,7 @@
         /// <summary>
         /// Checks if an app's current build version has been previously downloaded.
         /// </summary>
-        public bool IsAppUpToDate(AppInfo app) => _appInfoHandler.AppIsUpToDate(app);
+        public bool? IsAppUpToDate(AppInfo app) => _appInfoHandler.AppIsUpToDate(app);
 
         /// <summary>
         /// Gets the download size for an app by downloading and parsing its manifest.

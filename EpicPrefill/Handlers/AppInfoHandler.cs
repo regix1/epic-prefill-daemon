@@ -74,12 +74,13 @@
         /// <summary>
         /// An app will be considered up to date if it's current build version has been previously downloaded.
         /// </summary>
-        public bool AppIsUpToDate(AppInfo appInfo)
+        public bool? AppIsUpToDate(AppInfo appInfo)
         {
             lock (Gates.GetOrAdd(_path, _ => new object()))
             {
                 return _previouslyDownloadedApps.TryGetValue(appInfo.AppId, out var versions)
-                    && versions.Contains(appInfo.BuildVersion);
+                    ? versions.Contains(appInfo.BuildVersion)
+                    : null;
             }
         }
     }

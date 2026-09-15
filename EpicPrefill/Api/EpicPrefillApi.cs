@@ -235,7 +235,7 @@ public sealed class EpicPrefillApi : IDisposable
                 var isUpToDate = _epicManager.IsAppUpToDate(game);
                 long downloadSize = 0;
 
-                if (!isUpToDate)
+                if (isUpToDate != true)
                 {
                     try
                     {
@@ -257,7 +257,7 @@ public sealed class EpicPrefillApi : IDisposable
                     AppId = appId,
                     Name = game.Title,
                     DownloadSize = downloadSize,
-                    IsUpToDate = isUpToDate
+                    IsUpToDate = isUpToDate == true
                 });
             }
 
@@ -308,18 +308,21 @@ public sealed class EpicPrefillApi : IDisposable
 
             var apps = new List<AppCacheStatus>();
             foreach (var cachedApp in cachedApps
-                         .Where(app => !string.IsNullOrWhiteSpace(app.Revision))
                          .DistinctBy(app => app.AppId, StringComparer.OrdinalIgnoreCase))
             {
                 cancellationToken.ThrowIfCancellationRequested();
 
                 if (gamesByAppId.TryGetValue(cachedApp.AppId, out var game))
                 {
+                    var isUpToDate = string.IsNullOrWhiteSpace(cachedApp.Revision)
+                        ? _epicManager.IsAppUpToDate(game)
+                        : StringComparer.Ordinal.Equals(cachedApp.Revision, game.BuildVersion);
+                    if (!isUpToDate.HasValue) continue;
                     apps.Add(new AppCacheStatus
                     {
                         AppId = cachedApp.AppId,
                         Name = game.Title,
-                        IsUpToDate = StringComparer.Ordinal.Equals(cachedApp.Revision, game.BuildVersion)
+                        IsUpToDate = isUpToDate.Value
                     });
                 }
             }
