@@ -13,6 +13,7 @@ public sealed class EpicPrefillApi : IDisposable
 {
     private readonly IEpicAuthProvider _authProvider;
     private readonly IPrefillProgress _progress;
+    private readonly TimeProvider _clock;
 
     private EpicGamesManager? _epicManager;
 
@@ -22,10 +23,12 @@ public sealed class EpicPrefillApi : IDisposable
 
     public EpicPrefillApi(
         IEpicAuthProvider authProvider,
-        IPrefillProgress? progress = null)
+        IPrefillProgress? progress = null,
+        TimeProvider? clock = null)
     {
         _authProvider = authProvider ?? throw new ArgumentNullException(nameof(authProvider));
         _progress = progress ?? NullProgress.Instance;
+        _clock = clock ?? TimeProvider.System;
     }
 
     public bool IsInitialized => _isInitialized;
@@ -287,59 +290,49 @@ public sealed class EpicPrefillApi : IDisposable
     /// Checks cache status by comparing app build versions against previously downloaded versions.
     /// Returns which apps are up-to-date and which need updating.
     /// </summary>
-    public async Task<CacheStatusResult> CheckCacheStatusAsync(List<CachedAppInput> cachedApps, CancellationToken cancellationToken = default)
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1068:CancellationToken parameters must come last",
+        Justification = "The versioned fields follow the existing cancellation token to preserve source compatibility.")]
+    public async Task<CacheStatusResult> CheckCacheStatusAsync(
+        List<CachedAppInput> cachedApps,
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? expiresAtUtc = null,
+        int? cacheStatusVersion = null)
     {
         ThrowIfNotInitialized();
         ThrowIfDisposed();
 
-        if (cachedApps.Count == 0)
-        {
-            return new CacheStatusResult
-            {
-                Apps = new List<AppCacheStatus>(),
-                Message = "No app IDs provided"
-            };
-        }
-
         try
         {
-            var allGames = await _epicManager!.GetAvailableGamesAsync(cancellationToken);
-            var gamesByAppId = allGames.ToDictionary(g => g.AppId, g => g, StringComparer.OrdinalIgnoreCase);
-
-            var apps = new List<AppCacheStatus>();
-            foreach (var cachedApp in cachedApps
-                         .DistinctBy(app => app.AppId, StringComparer.OrdinalIgnoreCase))
-            {
-                cancellationToken.ThrowIfCancellationRequested();
-
-                if (gamesByAppId.TryGetValue(cachedApp.AppId, out var game))
-                {
-                    var isUpToDate = string.IsNullOrWhiteSpace(cachedApp.Revision)
-                        ? _epicManager.IsAppUpToDate(game)
-                        : StringComparer.Ordinal.Equals(cachedApp.Revision, game.BuildVersion);
-                    if (!isUpToDate.HasValue) continue;
-                    apps.Add(new AppCacheStatus
-                    {
-                        AppId = cachedApp.AppId,
-                        Name = game.Title,
-                        IsUpToDate = isUpToDate.Value
-                    });
-                }
-            }
-
-            return new CacheStatusResult
-            {
-                Apps = apps,
-                Message = $"Checked {apps.Count} apps"
-            };
+            return await CheckCacheStatusAsync(
+                cachedApps,
+                (includeDetails, token) => _epicManager!.GetAvailableGamesAsync(token, includeDetails),
+                (game, _) => ValueTask.FromResult(_epicManager!.IsAppUpToDate(game)),
+                _clock,
+                cancellationToken,
+                expiresAtUtc,
+                cacheStatusVersion);
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (EpicLoginException)
+        {
+            throw;
+        }
+        catch (ArgumentException) when (cacheStatusVersion == 2)
         {
             throw;
         }
         catch (Exception ex)
         {
             _progress.OnError("Failed to check cache status", ex);
+            if (cacheStatusVersion == 2)
+            {
+                return CreateUnknownResult(cachedApps, CacheReason.InspectionFailed, cacheStatusVersion);
+            }
             return new CacheStatusResult
             {
                 Apps = new List<AppCacheStatus>(),
@@ -347,6 +340,271 @@ public sealed class EpicPrefillApi : IDisposable
             };
         }
     }
+
+    [System.Diagnostics.CodeAnalysis.SuppressMessage(
+        "Design",
+        "CA1068:CancellationToken parameters must come last",
+        Justification = "The production core mirrors the public compatibility-preserving parameter order.")]
+    internal static async Task<CacheStatusResult> CheckCacheStatusAsync(
+        IReadOnlyList<CachedAppInput> cachedApps,
+        Func<bool, CancellationToken, Task<List<AppInfo>>> getAvailableGames,
+        Func<AppInfo, CancellationToken, ValueTask<bool?>> inspectCache,
+        TimeProvider clock,
+        CancellationToken cancellationToken = default,
+        DateTimeOffset? expiresAtUtc = null,
+        int? cacheStatusVersion = null)
+    {
+        cancellationToken.ThrowIfCancellationRequested();
+        ArgumentNullException.ThrowIfNull(cachedApps);
+        ArgumentNullException.ThrowIfNull(getAvailableGames);
+        ArgumentNullException.ThrowIfNull(inspectCache);
+        ArgumentNullException.ThrowIfNull(clock);
+
+        if (cacheStatusVersion is not null and not 2)
+        {
+            throw new ArgumentException("cacheStatusVersion must be 2", nameof(cacheStatusVersion));
+        }
+        if (cacheStatusVersion == 2 && expiresAtUtc is null)
+        {
+            throw new ArgumentException("expiresAtUtc is required for cacheStatusVersion 2", nameof(expiresAtUtc));
+        }
+
+        var version2 = cacheStatusVersion == 2;
+        var requestedApps = version2
+            ? cachedApps.ToList()
+            : cachedApps.DistinctBy(app => app.AppId, StringComparer.OrdinalIgnoreCase).ToList();
+        if (version2)
+        {
+            ValidateV2Apps(requestedApps);
+        }
+
+        if (requestedApps.Count == 0)
+        {
+            return new CacheStatusResult
+            {
+                Apps = new List<AppCacheStatus>(),
+                Message = version2 ? null : "No app IDs provided",
+                Version = cacheStatusVersion
+            };
+        }
+
+        var inspectionEndsAtUtc = expiresAtUtc?.ToUniversalTime().Subtract(TimeSpan.FromSeconds(2));
+        if (InspectionEnded(clock, inspectionEndsAtUtc))
+        {
+            return version2
+                ? CreateUnknownResult(requestedApps, CacheReason.DeadlineReached, cacheStatusVersion)
+                : new CacheStatusResult { Apps = new List<AppCacheStatus>(), Message = "Checked 0 apps" };
+        }
+
+        using var deadlineCancellation = new CancellationTokenSource();
+#pragma warning disable AsyncFixer02 // TimeProvider timer callbacks must signal cancellation synchronously.
+        using var deadlineTimer = inspectionEndsAtUtc is { } inspectionEnd
+            ? clock.CreateTimer(
+                CancelDeadline,
+                deadlineCancellation,
+                inspectionEnd - clock.GetUtcNow(),
+                Timeout.InfiniteTimeSpan)
+            : null;
+#pragma warning restore AsyncFixer02
+        using var inspectionCancellation = inspectionEndsAtUtc is null
+            ? CancellationTokenSource.CreateLinkedTokenSource(cancellationToken)
+            : CancellationTokenSource.CreateLinkedTokenSource(cancellationToken, deadlineCancellation.Token);
+        var inspectionToken = inspectionCancellation.Token;
+        List<AppInfo> allGames;
+        try
+        {
+            allGames = await getAvailableGames(!version2, inspectionToken);
+            cancellationToken.ThrowIfCancellationRequested();
+            if (InspectionEnded(clock, inspectionEndsAtUtc))
+            {
+                return version2
+                    ? CreateUnknownResult(requestedApps, CacheReason.DeadlineReached, cacheStatusVersion)
+                    : new CacheStatusResult { Apps = new List<AppCacheStatus>(), Message = "Checked 0 apps" };
+            }
+        }
+        catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+        {
+            throw;
+        }
+        catch (OperationCanceledException) when (deadlineCancellation.IsCancellationRequested || InspectionEnded(clock, inspectionEndsAtUtc))
+        {
+            return version2
+                ? CreateUnknownResult(requestedApps, CacheReason.DeadlineReached, cacheStatusVersion)
+                : new CacheStatusResult { Apps = new List<AppCacheStatus>(), Message = "Checked 0 apps" };
+        }
+        catch (EpicLoginException)
+        {
+            throw;
+        }
+        catch
+        {
+            return version2
+                ? CreateUnknownResult(requestedApps, CacheReason.InspectionFailed, cacheStatusVersion)
+                : new CacheStatusResult { Apps = new List<AppCacheStatus>(), Message = "Checked 0 apps" };
+        }
+
+        var gamesByAppId = allGames.ToDictionary(game => game.AppId, game => game, StringComparer.OrdinalIgnoreCase);
+        var results = new List<AppCacheStatus>();
+        for (var index = 0; index < requestedApps.Count; index++)
+        {
+            cancellationToken.ThrowIfCancellationRequested();
+            if (InspectionEnded(clock, inspectionEndsAtUtc))
+            {
+                AddDeadlineRows(results, requestedApps, index, version2);
+                break;
+            }
+
+            var cachedApp = requestedApps[index];
+            if (!gamesByAppId.TryGetValue(cachedApp.AppId, out var game))
+            {
+                if (version2)
+                {
+                    results.Add(CreateUnknown(cachedApp.AppId, CacheReason.MissingApp));
+                }
+                continue;
+            }
+            if (string.IsNullOrWhiteSpace(game.BuildVersion))
+            {
+                if (version2)
+                {
+                    results.Add(CreateUnknown(cachedApp.AppId, CacheReason.ManifestUnavailable));
+                }
+                continue;
+            }
+
+            bool? isUpToDate;
+            try
+            {
+                isUpToDate = string.IsNullOrWhiteSpace(cachedApp.Revision)
+                    ? await inspectCache(game, inspectionToken)
+                    : StringComparer.Ordinal.Equals(cachedApp.Revision, game.BuildVersion);
+                cancellationToken.ThrowIfCancellationRequested();
+                if (InspectionEnded(clock, inspectionEndsAtUtc))
+                {
+                    AddDeadlineRows(results, requestedApps, index, version2);
+                    break;
+                }
+            }
+            catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
+            {
+                throw;
+            }
+            catch (OperationCanceledException) when (deadlineCancellation.IsCancellationRequested || InspectionEnded(clock, inspectionEndsAtUtc))
+            {
+                AddDeadlineRows(results, requestedApps, index, version2);
+                break;
+            }
+            catch (EpicLoginException)
+            {
+                throw;
+            }
+            catch
+            {
+                if (version2)
+                {
+                    results.Add(CreateUnknown(cachedApp.AppId, CacheReason.InspectionFailed));
+                }
+                continue;
+            }
+
+            if (!isUpToDate.HasValue)
+            {
+                if (version2)
+                {
+                    results.Add(CreateUnknown(cachedApp.AppId, CacheReason.NoCacheEvidence));
+                }
+                continue;
+            }
+
+            var outcome = isUpToDate.Value ? CacheOutcome.Current : CacheOutcome.Outdated;
+            results.Add(new AppCacheStatus
+            {
+                AppId = cachedApp.AppId,
+                Name = version2 ? cachedApp.AppId : game.Title,
+                IsUpToDate = isUpToDate.Value,
+                Outcome = version2 ? outcome : null
+            });
+        }
+
+        return new CacheStatusResult
+        {
+            Apps = results,
+            Message = version2 ? null : $"Checked {results.Count} apps",
+            Version = cacheStatusVersion
+        };
+    }
+
+    private static void ValidateV2Apps(IEnumerable<CachedAppInput> cachedApps)
+    {
+        var appIds = new HashSet<string>(StringComparer.OrdinalIgnoreCase);
+        foreach (var cachedApp in cachedApps)
+        {
+            if (cachedApp is null || string.IsNullOrWhiteSpace(cachedApp.AppId))
+            {
+                throw new ArgumentException("cachedApps must contain nonempty appId values", nameof(cachedApps));
+            }
+            if (!appIds.Add(cachedApp.AppId))
+            {
+                throw new ArgumentException("cachedApps must contain unique appId values", nameof(cachedApps));
+            }
+        }
+    }
+
+    private static bool InspectionEnded(TimeProvider clock, DateTimeOffset? inspectionEndsAtUtc)
+        => inspectionEndsAtUtc is { } inspectionEnd && clock.GetUtcNow() >= inspectionEnd;
+
+#pragma warning disable AsyncFixer02 // TimeProvider invokes timer callbacks synchronously.
+    private static void CancelDeadline(object? state)
+    {
+        try
+        {
+            ((CancellationTokenSource)state!).Cancel();
+        }
+        catch (ObjectDisposedException)
+        {
+            // Disposal won a race with a timer callback that had already been selected to run.
+        }
+    }
+#pragma warning restore AsyncFixer02
+
+    private static void AddDeadlineRows(
+        List<AppCacheStatus> results,
+        IReadOnlyList<CachedAppInput> requestedApps,
+        int startIndex,
+        bool version2)
+    {
+        if (!version2)
+        {
+            return;
+        }
+        for (var index = startIndex; index < requestedApps.Count; index++)
+        {
+            results.Add(CreateUnknown(requestedApps[index].AppId, CacheReason.DeadlineReached));
+        }
+    }
+
+    private static CacheStatusResult CreateUnknownResult(
+        IEnumerable<CachedAppInput> cachedApps,
+        CacheReason reason,
+        int? cacheStatusVersion)
+    {
+        var apps = cachedApps.Select(app => CreateUnknown(app.AppId, reason)).ToList();
+        return new CacheStatusResult
+        {
+            Apps = apps,
+            Message = cacheStatusVersion == 2 ? null : $"Checked {apps.Count} apps",
+            Version = cacheStatusVersion
+        };
+    }
+
+    private static AppCacheStatus CreateUnknown(string appId, CacheReason reason) => new()
+    {
+        AppId = appId,
+        Name = appId,
+        IsUpToDate = false,
+        Outcome = CacheOutcome.Unknown,
+        Reason = reason
+    };
 
     public void SetSelectedApps(IEnumerable<string> appIds)
     {

@@ -177,19 +177,6 @@ public class OwnedGame
     public List<KeyImage>? KeyImages { get; init; }
 }
 
-public class CacheStatusResult
-{
-    public List<AppCacheStatus> Apps { get; init; } = new();
-    public string? Message { get; init; }
-}
-
-public class AppCacheStatus
-{
-    public string AppId { get; init; } = "";
-    public string Name { get; init; } = "";
-    public bool IsUpToDate { get; init; }
-}
-
 public class CdnInfo
 {
     public string AppId { get; init; } = string.Empty;

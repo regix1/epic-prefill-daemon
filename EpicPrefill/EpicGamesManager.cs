@@ -323,25 +323,31 @@
         }
 
         //TODO comment
+        [System.Diagnostics.CodeAnalysis.SuppressMessage(
+            "Design",
+            "CA1068:CancellationToken parameters must come last",
+            Justification = "The optional detail flag follows the existing cancellation token to preserve source compatibility.")]
         public async Task<List<AppInfo>> GetAvailableGamesAsync(
-            CancellationToken cancellationToken = default)
+            CancellationToken cancellationToken = default,
+            bool includeDetails = true)
         {
             var ownedAssets = await _epicApi.GetOwnedAppsAsync(cancellationToken);
-            var appMetadata = await _epicApi.LoadAppMetadataAsync(ownedAssets, cancellationToken);
+            var appMetadata = includeDetails
+                ? await _epicApi.LoadAppMetadataAsync(ownedAssets, cancellationToken)
+                : null;
 
             var ownedApps = new List<AppInfo>();
             foreach (Asset asset in ownedAssets)
             {
                 cancellationToken.ThrowIfCancellationRequested();
-                var metadata = appMetadata[asset.AppId];
                 var app = new AppInfo
                 {
                     AppId = asset.AppId,
                     BuildVersion = asset.BuildVersion,
                     CatalogItemId = asset.CatalogItemId,
                     Namespace = asset.Namespace,
-                    Title = metadata.Title,
-                    KeyImages = metadata.KeyImages
+                    Title = includeDetails ? appMetadata![asset.AppId].Title : asset.AppId,
+                    KeyImages = includeDetails ? appMetadata![asset.AppId].KeyImages : new List<KeyImage>()
                 };
                 ownedApps.Add(app);
             }

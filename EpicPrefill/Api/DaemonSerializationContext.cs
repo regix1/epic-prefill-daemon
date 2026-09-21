@@ -22,6 +22,8 @@ namespace EpicPrefill.Api;
 [JsonSerializable(typeof(SelectedAppsStatus))]
 [JsonSerializable(typeof(CacheStatusResult))]
 [JsonSerializable(typeof(AppCacheStatus))]
+[JsonSerializable(typeof(CacheOutcome))]
+[JsonSerializable(typeof(CacheReason))]
 [JsonSerializable(typeof(CdnInfo))]
 [JsonSerializable(typeof(CdnInfoResult))]
 // Socket event types

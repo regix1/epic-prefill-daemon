@@ -118,7 +118,7 @@ public sealed class PrefillRunTests
             var status = Assert.IsType<StatusData>((await Send(commands, "status")).Data);
             Assert.Equal(2, status.ProtocolVersion);
             Assert.Equal(4, status.MaxConcurrentRuns);
-            Assert.Equal(5, status.Features.Count);
+            Assert.Contains("cacheStatusV2", status.Features);
             var first = Start("one", status.DaemonInstanceId!, "a");
             var second = Start("two", status.DaemonInstanceId!, "b");
             Assert.True((await Send(commands, first)).Success);

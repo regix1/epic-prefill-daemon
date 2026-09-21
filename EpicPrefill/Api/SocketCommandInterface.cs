@@ -19,9 +19,11 @@ public sealed class SocketCommandInterface : IDisposable
     private readonly OwnedOperationCoordinator _prefillOperation;
     private readonly RequestBudget _budget;
     private readonly ItemClaims _claims = new();
+    private readonly TimeProvider _clock;
     private readonly System.Collections.Concurrent.ConcurrentDictionary<string, PrefillRun> _runs = new(StringComparer.Ordinal);
     private readonly Func<PrefillOptions, PrefillRun?, CancellationToken, Task<PrefillResult>>? _execute;
     private readonly Func<string, CancellationToken, Task>? _loginWithRefreshToken;
+    private readonly Func<IReadOnlyList<CachedAppInput>, CancellationToken, DateTimeOffset?, int?, Task<CacheStatusResult>>? _checkCacheStatus;
     private CancellationTokenSource? _loginCts;
     private EpicPrefillApi? _api;
     private Task? _loginTask;
@@ -41,6 +43,7 @@ public sealed class SocketCommandInterface : IDisposable
     // anyway. Logout must never hang on a stuck login.
     private static readonly TimeSpan LogoutLoginTaskTimeout = TimeSpan.FromSeconds(8);
     private static readonly string[] Presets = { "all", "recent", "top" };
+    private static readonly IReadOnlyList<string> StatusFeatures = PrefillProtocol.Features.Concat(["cacheStatusV2"]).ToArray();
 
     private static readonly HashSet<string> PreLoginCommands = new(StringComparer.OrdinalIgnoreCase)
     {
@@ -56,8 +59,9 @@ public sealed class SocketCommandInterface : IDisposable
         "get-auto-login-challenge"
     };
 
-    public SocketCommandInterface(string socketPath)
+    public SocketCommandInterface(string socketPath, TimeProvider? clock = null)
     {
+        _clock = clock ?? TimeProvider.System;
         _prefillOperation = new OwnedOperationCoordinator(_protocol.MaxConcurrentRuns);
         _budget = new RequestBudget(_protocol.MaxConcurrentRequests);
         _progress = new SocketProgress();
@@ -69,8 +73,9 @@ public sealed class SocketCommandInterface : IDisposable
         _progress.SocketServer = _socketServer;
     }
 
-    public SocketCommandInterface(int tcpPort)
+    public SocketCommandInterface(int tcpPort, TimeProvider? clock = null)
     {
+        _clock = clock ?? TimeProvider.System;
         _prefillOperation = new OwnedOperationCoordinator(_protocol.MaxConcurrentRuns);
         _budget = new RequestBudget(_protocol.MaxConcurrentRequests);
         _progress = new SocketProgress();
@@ -82,17 +87,33 @@ public sealed class SocketCommandInterface : IDisposable
         _progress.SocketServer = _socketServer;
     }
 
-    internal SocketCommandInterface(int tcpPort, Func<PrefillOptions, PrefillRun?, CancellationToken, Task<PrefillResult>> execute)
-        : this(tcpPort)
+    internal SocketCommandInterface(
+        int tcpPort,
+        Func<PrefillOptions, PrefillRun?, CancellationToken, Task<PrefillResult>> execute,
+        TimeProvider? clock = null)
+        : this(tcpPort, clock)
     {
         _execute = execute;
         _isLoggedIn = true;
     }
 
-    internal SocketCommandInterface(int tcpPort, Func<string, CancellationToken, Task> loginWithRefreshToken)
-        : this(tcpPort)
+    internal SocketCommandInterface(
+        int tcpPort,
+        Func<string, CancellationToken, Task> loginWithRefreshToken,
+        TimeProvider? clock = null)
+        : this(tcpPort, clock)
     {
         _loginWithRefreshToken = loginWithRefreshToken;
+    }
+
+    internal SocketCommandInterface(
+        int tcpPort,
+        Func<IReadOnlyList<CachedAppInput>, CancellationToken, DateTimeOffset?, int?, Task<CacheStatusResult>> checkCacheStatus,
+        TimeProvider? clock = null)
+        : this(tcpPort, clock)
+    {
+        _checkCacheStatus = checkCacheStatus;
+        _isLoggedIn = true;
     }
 
     public async Task StartAsync(CancellationToken cancellationToken = default)
@@ -234,7 +255,7 @@ public sealed class SocketCommandInterface : IDisposable
         // against a logout-raced login resurrecting state, not just a belt-and-suspenders check.
         var loginGeneration = Interlocked.Increment(ref _loginGeneration);
 
-        var api = new EpicPrefillApi(_authProvider, _progress);
+        var api = new EpicPrefillApi(_authProvider, _progress, _clock);
         _api = api;
 
         _loginTask = Task.Run(async () =>
@@ -412,7 +433,7 @@ public sealed class SocketCommandInterface : IDisposable
         var loginCts = _loginCts;
         var loginGeneration = Interlocked.Increment(ref _loginGeneration);
 
-        var api = new EpicPrefillApi(_authProvider, _progress);
+        var api = new EpicPrefillApi(_authProvider, _progress, _clock);
         _api = api;
 
         _loginTask = Task.Run(async () =>
@@ -707,7 +728,7 @@ public sealed class SocketCommandInterface : IDisposable
             Data = new StatusData
             {
                 ProtocolVersion = PrefillProtocol.Version,
-                Features = PrefillProtocol.Features,
+                Features = StatusFeatures,
                 DaemonInstanceId = _protocol.DaemonInstanceId,
                 MaxConcurrentRuns = _protocol.MaxConcurrentRuns,
                 MaxConcurrentRequests = _protocol.MaxConcurrentRequests,
@@ -1060,6 +1081,38 @@ public sealed class SocketCommandInterface : IDisposable
     {
         EnsureLoggedIn();
 
+        int? cacheStatusVersion = null;
+        if (request.Parameters?.TryGetValue("cacheStatusVersion", out var rawVersion) == true)
+        {
+            if (!int.TryParse(rawVersion, System.Globalization.NumberStyles.None, System.Globalization.CultureInfo.InvariantCulture, out var parsedVersion) || parsedVersion != 2)
+            {
+                throw new ArgumentException("cacheStatusVersion must be 2");
+            }
+            cacheStatusVersion = parsedVersion;
+        }
+
+        DateTimeOffset? expiresAtUtc = null;
+        if (request.Parameters?.TryGetValue("expiresAtUtc", out var rawExpiry) == true)
+        {
+            if (DateTimeOffset.TryParseExact(
+                rawExpiry,
+                "O",
+                System.Globalization.CultureInfo.InvariantCulture,
+                System.Globalization.DateTimeStyles.RoundtripKind,
+                out var parsedExpiry))
+            {
+                expiresAtUtc = parsedExpiry.ToUniversalTime();
+            }
+            else
+            {
+                throw new ArgumentException("expiresAtUtc must be a round-trip UTC timestamp");
+            }
+        }
+        if (cacheStatusVersion == 2 && expiresAtUtc is null)
+        {
+            throw new ArgumentException("expiresAtUtc is required for cacheStatusVersion 2");
+        }
+
         List<CachedAppInput> cachedApps;
         var cachedAppsJson = request.Parameters?.GetValueOrDefault("cachedApps");
         if (!string.IsNullOrEmpty(cachedAppsJson))
@@ -1069,6 +1122,10 @@ public sealed class SocketCommandInterface : IDisposable
         }
         else
         {
+            if (cacheStatusVersion == 2)
+            {
+                throw new ArgumentException("cachedApps must be an array");
+            }
             // No app IDs provided
             return new CommandResponse
             {
@@ -1080,7 +1137,9 @@ public sealed class SocketCommandInterface : IDisposable
             };
         }
 
-        var status = await _api!.CheckCacheStatusAsync(cachedApps, cancellationToken);
+        var status = _checkCacheStatus is not null
+            ? await _checkCacheStatus(cachedApps, cancellationToken, expiresAtUtc, cacheStatusVersion)
+            : await _api!.CheckCacheStatusAsync(cachedApps, cancellationToken, expiresAtUtc, cacheStatusVersion);
 
         return new CommandResponse
         {
@@ -1110,7 +1169,7 @@ public sealed class SocketCommandInterface : IDisposable
 
     private void EnsureLoggedIn()
     {
-        if (!_isLoggedIn || (_execute == null && (_api == null || !_api.IsInitialized)))
+        if (!_isLoggedIn || (_execute == null && _checkCacheStatus == null && (_api == null || !_api.IsInitialized)))
             throw new InvalidOperationException("Not logged in. Please login first.");
     }
 
