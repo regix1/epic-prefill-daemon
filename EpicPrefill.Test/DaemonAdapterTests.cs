@@ -1,8 +1,10 @@
 using System.Net;
 using System.Net.Sockets;
+using System.Reflection;
 using System.Text.Json;
 using LancachePrefill.Common;
 using EpicPrefill.Api;
+using EpicPrefill.Models.Exceptions;
 using EpicPrefill.Settings;
 
 namespace EpicPrefill.Test;
@@ -92,6 +94,187 @@ public sealed class DaemonAdapterTests
         finally
         {
             release.TrySetResult();
+            await commands.StopAsync();
+            Environment.SetEnvironmentVariable(SocketSecretVariable, originalSecret);
+        }
+    }
+
+    [Fact]
+    public async Task APrefillWithoutProtocolVersionIsRefusedAsOutdated()
+    {
+        var originalSecret = Environment.GetEnvironmentVariable(SocketSecretVariable);
+        Environment.SetEnvironmentVariable(SocketSecretVariable, null);
+        var calls = 0;
+        var port = GetUnusedTcpPort();
+        using var commands = new SocketCommandInterface(port, (_, _, _) =>
+        {
+            Interlocked.Increment(ref calls);
+            return Task.FromResult(new PrefillResult { Success = true });
+        });
+        try
+        {
+            await commands.StartAsync();
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            var stream = client.GetStream();
+            await WriteCommandAsync(stream, new CommandRequest { Id = "legacy", Type = "prefill" });
+            var response = await ReadResponseAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.False(response.Success);
+            Assert.Equal("daemon-outdated", response.ErrorCode);
+            Assert.Equal(0, calls);
+        }
+        finally
+        {
+            await commands.StopAsync();
+            Environment.SetEnvironmentVariable(SocketSecretVariable, originalSecret);
+        }
+    }
+
+    [Fact]
+    public async Task UnknownOperationAnswersWithTheTypedNotFoundCode()
+    {
+        var originalSecret = Environment.GetEnvironmentVariable(SocketSecretVariable);
+        Environment.SetEnvironmentVariable(SocketSecretVariable, null);
+        var port = GetUnusedTcpPort();
+        using var commands = new SocketCommandInterface(port, (_, _, _) =>
+            Task.FromResult(new PrefillResult { Success = true }));
+        try
+        {
+            await commands.StartAsync();
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            var stream = client.GetStream();
+            await WriteCommandAsync(stream, new CommandRequest { Id = "status", Type = "status" });
+            using var status = await ReadJsonFrameAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+            var instance = status.RootElement.GetProperty("data").GetProperty("daemonInstanceId").GetString()!;
+            foreach (var type in new[] { "cancel-prefill", "get-operation" })
+            {
+                await WriteCommandAsync(stream, new CommandRequest
+                {
+                    Id = type,
+                    Type = type,
+                    Parameters = new()
+                    {
+                        ["operationId"] = Guid.NewGuid().ToString(),
+                        ["daemonInstanceId"] = instance
+                    }
+                });
+                var response = await ReadResponseAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+                Assert.False(response.Success);
+                Assert.Equal("operation-not-found", response.ErrorCode);
+            }
+        }
+        finally
+        {
+            await commands.StopAsync();
+            Environment.SetEnvironmentVariable(SocketSecretVariable, originalSecret);
+        }
+    }
+
+    [Fact]
+    public async Task ARunIsListedOnlyOnceItIsAdmitted()
+    {
+        var originalSecret = Environment.GetEnvironmentVariable(SocketSecretVariable);
+        Environment.SetEnvironmentVariable(SocketSecretVariable, null);
+        var port = GetUnusedTcpPort();
+        using var commands = new SocketCommandInterface(port, (_, _, _) =>
+            Task.FromResult(new PrefillResult { Success = true }));
+        var flags = BindingFlags.NonPublic | BindingFlags.Instance;
+        var owner = typeof(SocketCommandInterface).GetField("_prefillOperation", flags)!.GetValue(commands)!;
+        var admissionLock = owner.GetType().GetField("_sync", flags)!.GetValue(owner)!;
+        var runs = (System.Collections.IDictionary)typeof(SocketCommandInterface)
+            .GetField("_runs", flags)!.GetValue(commands)!;
+        using var holding = new ManualResetEventSlim();
+        using var release = new ManualResetEventSlim();
+        var holder = Task.CompletedTask;
+        try
+        {
+            await commands.StartAsync();
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            var stream = client.GetStream();
+            await WriteCommandAsync(stream, new CommandRequest { Id = "status", Type = "status" });
+            using var status = await ReadJsonFrameAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+            var instance = status.RootElement.GetProperty("data").GetProperty("daemonInstanceId").GetString()!;
+            holder = Task.Factory.StartNew(() =>
+            {
+                lock (admissionLock) { holding.Set(); release.Wait(); }
+            }, TaskCreationOptions.LongRunning);
+            Assert.True(holding.Wait(TimeSpan.FromSeconds(5)));
+            await WriteCommandAsync(stream, new CommandRequest
+            {
+                Id = "held",
+                Type = "prefill",
+                Parameters = new()
+                {
+                    ["protocolVersion"] = "2",
+                    ["daemonInstanceId"] = instance,
+                    ["appIds"] = JsonSerializer.Serialize(new[] { "held" })
+                }
+            });
+            await Task.Delay(500);
+            var listedBeforeAdmission = runs.Contains("held");
+            release.Set();
+            await holder;
+            var ack = await ReadResponseAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+            Assert.True(ack.Success);
+            Assert.False(listedBeforeAdmission);
+        }
+        finally
+        {
+            release.Set();
+            await commands.StopAsync();
+            Environment.SetEnvironmentVariable(SocketSecretVariable, originalSecret);
+        }
+    }
+
+    [Fact]
+    public async Task ALoginLossAfterAnotherRunLostItsLoginStillEndsTheRunAsAuthLost()
+    {
+        var originalSecret = Environment.GetEnvironmentVariable(SocketSecretVariable);
+        Environment.SetEnvironmentVariable(SocketSecretVariable, null);
+        var port = GetUnusedTcpPort();
+        using var commands = new SocketCommandInterface(port, (_, _, _) =>
+            throw new EpicLoginException("Epic login expired"));
+        typeof(SocketCommandInterface).GetField("_authLost", BindingFlags.NonPublic | BindingFlags.Instance)!
+            .SetValue(commands, 1);
+        try
+        {
+            await commands.StartAsync();
+            using var client = new TcpClient();
+            await client.ConnectAsync(IPAddress.Loopback, port);
+            var stream = client.GetStream();
+            await WriteCommandAsync(stream, new CommandRequest { Id = "status", Type = "status" });
+            using var status = await ReadJsonFrameAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
+            var instance = status.RootElement.GetProperty("data").GetProperty("daemonInstanceId").GetString()!;
+            await WriteCommandAsync(stream, new CommandRequest
+            {
+                Id = "late",
+                Type = "prefill",
+                Parameters = new()
+                {
+                    ["protocolVersion"] = "2",
+                    ["daemonInstanceId"] = instance,
+                    ["appIds"] = JsonSerializer.Serialize(new[] { "late" })
+                }
+            });
+            string? reason = null;
+            using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+            while (reason == null)
+            {
+                using var frame = await ReadJsonFrameAsync(stream).WaitAsync(timeout.Token);
+                var root = frame.RootElement;
+                if (!root.TryGetProperty("type", out var type) || type.GetString() != "progress") { continue; }
+                var progress = root.GetProperty("data");
+                if (progress.GetProperty("state").GetString() == "failed")
+                {
+                    reason = progress.GetProperty("reason").GetString();
+                }
+            }
+            Assert.Equal("auth-lost", reason);
+        }
+        finally
+        {
             await commands.StopAsync();
             Environment.SetEnvironmentVariable(SocketSecretVariable, originalSecret);
         }
@@ -240,48 +423,6 @@ public sealed class DaemonAdapterTests
             Console.SetOut(originalOutput);
             AppConfig.DebugLogs = originalDebug;
             AppConfig.VerboseLogs = originalVerbose;
-        }
-    }
-
-    [Fact]
-    public async Task SocketProgress_CancellationBroadcastsCancelledTerminal()
-    {
-        var originalSecret = Environment.GetEnvironmentVariable(SocketSecretVariable);
-        Environment.SetEnvironmentVariable(SocketSecretVariable, null);
-        var progress = new SocketCommandInterface.SocketProgress();
-        var port = GetUnusedTcpPort();
-        await using var server = new SocketServer(port, progress, IPAddress.Loopback)
-        {
-            CommandLaneSelector = _ => DaemonCommandLane.Concurrent,
-            OnCommand = (request, _) => Task.FromResult(new CommandResponse
-            {
-                Id = request.Id,
-                Success = true
-            })
-        };
-        progress.SocketServer = server;
-
-        try
-        {
-            await server.StartAsync();
-            using var client = new TcpClient();
-            await client.ConnectAsync(IPAddress.Loopback, port);
-            var stream = client.GetStream();
-
-            await WriteCommandAsync(stream, new CommandRequest { Id = "ready-id", Type = "status" });
-            _ = await ReadResponseAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
-
-            progress.OnCancelled("Prefill cancelled by user");
-            using var progressEvent = await ReadJsonFrameAsync(stream).WaitAsync(TimeSpan.FromSeconds(5));
-            var root = progressEvent.RootElement;
-
-            Assert.Equal("progress", root.GetProperty("type").GetString());
-            Assert.Equal("cancelled", root.GetProperty("data").GetProperty("state").GetString());
-            Assert.Equal("Prefill cancelled by user", root.GetProperty("data").GetProperty("errorMessage").GetString());
-        }
-        finally
-        {
-            Environment.SetEnvironmentVariable(SocketSecretVariable, originalSecret);
         }
     }
 

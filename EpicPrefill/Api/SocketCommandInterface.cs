@@ -628,7 +628,8 @@ public sealed class SocketCommandInterface : IDisposable
                 Id = request.Id,
                 Success = snapshot != null,
                 Data = snapshot,
-                Error = snapshot == null ? "operation-not-found" : null
+                Error = snapshot == null ? "operation-not-found" : null,
+                ErrorCode = snapshot == null ? "operation-not-found" : null
             };
         }
         if (!_prefillOperation.IsRunning)
@@ -756,7 +757,14 @@ public sealed class SocketCommandInterface : IDisposable
         var offset = parameters.TryGetValue("offset", out var start) ? int.Parse(start, System.Globalization.CultureInfo.InvariantCulture) : 0;
         var limit = parameters.TryGetValue("limit", out var count) ? int.Parse(count, System.Globalization.CultureInfo.InvariantCulture) : 100;
         var page = _prefillOperation.GetOperation(operationId, offset, limit);
-        return new CommandResponse { Id = request.Id, Success = page != null, Data = page, Error = page == null ? "operation-not-found" : null };
+        return new CommandResponse
+        {
+            Id = request.Id,
+            Success = page != null,
+            Data = page,
+            Error = page == null ? "operation-not-found" : null,
+            ErrorCode = page == null ? "operation-not-found" : null
+        };
     }
 
     private RunOptions CaptureOptions(Dictionary<string, string> parameters)
@@ -920,128 +928,62 @@ public sealed class SocketCommandInterface : IDisposable
         CommandRequest request,
         CancellationToken cancellationToken)
     {
+        if (request.Parameters?.GetValueOrDefault("protocolVersion") != "2") return new CommandResponse { Id = request.Id, Success = false, ErrorCode = "daemon-outdated", Error = "This daemon only accepts protocol version 2.", CompletedAt = DateTime.UtcNow };
+
         EnsureLoggedIn();
 
-        if (request.Parameters?.GetValueOrDefault("protocolVersion") == "2")
+        if (string.IsNullOrWhiteSpace(request.Id) || request.Id.Length > 128)
         {
-            if (string.IsNullOrWhiteSpace(request.Id) || request.Id.Length > 128)
+            throw new ArgumentException("Invalid operationId");
+        }
+        _protocol.ValidateInstance(request.Parameters.GetValueOrDefault("daemonInstanceId") ?? "");
+        var captured = CaptureOptions(request.Parameters);
+        var run = new PrefillRun(request.Id, _protocol, captured, _budget, _claims, _progress,
+            (snapshot, token) => _socketServer.BroadcastProgressAsync(new ProgressEvent(PrefillRun.ToUpdate(snapshot)), token));
+        var api = _api!;
+        var admission = await _prefillOperation.StartAsync(request.Id, PrefillProtocol.Fingerprint(run.Options),
+            run.Progress, token => run.ExecuteAsync(async runToken =>
             {
-                throw new ArgumentException("Invalid operationId");
-            }
-            _protocol.ValidateInstance(request.Parameters.GetValueOrDefault("daemonInstanceId") ?? "");
-            var captured = CaptureOptions(request.Parameters);
-            var run = new PrefillRun(request.Id, _protocol, captured, _budget, _claims, _progress,
-                (snapshot, token) => _socketServer.BroadcastProgressAsync(new ProgressEvent(PrefillRun.ToUpdate(snapshot)), token));
-            var api = _api!;
-            var registered = _runs.TryAdd(request.Id, run);
-            var admission = await _prefillOperation.StartAsync(request.Id, PrefillProtocol.Fingerprint(run.Options),
-                run.Progress, token => run.ExecuteAsync(async runToken =>
+                _runs.TryAdd(request.Id, run);
+                try
                 {
-                    try
+                    var execute = _execute ?? api.PrefillAsync;
+                    var result = await execute(new PrefillOptions
                     {
-                        var execute = _execute ?? api.PrefillAsync;
-                        var result = await execute(new PrefillOptions
-                        {
-                            Force = run.Options.Force,
-                            DownloadAllOwnedGames = run.Options.Selection == "all",
-                            Recent = run.Options.Selection == "recent",
-                            Top = run.Options.Selection == "top"
-                        }, run, runToken);
-                        if (!result.Success) { run.Progress.TryChooseTerminal("failed", "prefill-failed"); }
-                    }
-                    catch (EpicLoginException)
+                        Force = run.Options.Force,
+                        DownloadAllOwnedGames = run.Options.Selection == "all",
+                        Recent = run.Options.Selection == "recent",
+                        Top = run.Options.Selection == "top"
+                    }, run, runToken);
+                    if (!result.Success) { run.Progress.TryChooseTerminal("failed", "prefill-failed"); }
+                }
+                catch (EpicLoginException)
+                {
+                    _isLoggedIn = false;
+                    run.Progress.TryChooseTerminal("failed", "auth-lost");
+                    if (Interlocked.Exchange(ref _authLost, 1) == 0)
                     {
-                        _isLoggedIn = false;
-                        if (Interlocked.Exchange(ref _authLost, 1) == 0)
+                        foreach (var active in _runs.Values)
                         {
-                            foreach (var active in _runs.Values)
-                            {
-                                active.Progress.TryChooseTerminal("failed", "auth-lost");
-                                _prefillOperation.Cancel(active.Progress.Snapshot.OperationId, _protocol.DaemonInstanceId);
-                            }
-                            await BroadcastStatusAsync("auth-required", "Epic authentication is required");
+                            active.Progress.TryChooseTerminal("failed", "auth-lost");
+                            _prefillOperation.Cancel(active.Progress.Snapshot.OperationId, _protocol.DaemonInstanceId);
                         }
-                        throw;
+                        await BroadcastStatusAsync("auth-required", "Epic authentication is required");
                     }
-                    finally
-                    {
-                        _runs.TryRemove(request.Id, out _);
-                    }
-                }, token), _cts.Token);
-            if (registered && (!admission.Accepted || admission.Replayed)) { _runs.TryRemove(request.Id, out _); }
-            return new CommandResponse
-            {
-                Id = request.Id,
-                Success = admission.Accepted,
-                Error = admission.Error,
-                Data = admission.Accepted ? new PrefillStart(true, request.Id, _protocol.DaemonInstanceId,
-                    admission.Replayed ? admission.Operation!.State : "started") : null
-            };
-        }
-
-        if (_prefillOperation.IsRunning)
-        {
-            return new CommandResponse
-            {
-                Id = request.Id,
-                Success = false,
-                Error = "A prefill is already in progress",
-                CompletedAt = DateTime.UtcNow
-            };
-        }
-
-        var options = new PrefillOptions();
-
-        if (request.Parameters != null)
-        {
-            if (bool.TryParse(request.Parameters.GetValueOrDefault("all"), out var all))
-                options.DownloadAllOwnedGames = all;
-            if (bool.TryParse(request.Parameters.GetValueOrDefault("recent"), out var recent))
-                options.Recent = recent;
-            if (bool.TryParse(request.Parameters.GetValueOrDefault("top"), out var top))
-                options.Top = top;
-            if (bool.TryParse(request.Parameters.GetValueOrDefault("force"), out var force))
-                options.Force = force;
-        }
-
-        var legacy = new PrefillRun(request.Id, _protocol, new RunOptions
-        {
-            Selection = "legacy",
-            Force = options.Force,
-            MaxConcurrency = _protocol.MaxConcurrentRequests
-        }, _budget, _claims, _progress);
-        await _prefillOperation.StartAsync(operationToken => legacy.ExecuteAsync(async token =>
-        {
-            try
-            {
-                var result = _execute == null
-                    ? await _api!.PrefillAsync(options, token)
-                    : await _execute(options, null, token);
-                token.ThrowIfCancellationRequested();
-
-                if (result.Success)
-                {
-                    _progress.OnLog(LogLevel.Info, "Prefill completed successfully");
+                    throw;
                 }
-                else
+                finally
                 {
-                    _progress.OnLog(LogLevel.Warning, $"Prefill completed with errors: {result.ErrorMessage}");
-                    throw new InvalidOperationException(result.ErrorMessage ?? "Prefill failed");
+                    _runs.TryRemove(request.Id, out _);
                 }
-            }
-            catch (OperationCanceledException) when (token.IsCancellationRequested)
-            {
-                _progress.OnCancelled("Prefill cancelled by user");
-                throw;
-            }
-        }, operationToken), _cts.Token);
-
+            }, token), _cts.Token);
         return new CommandResponse
         {
             Id = request.Id,
-            Success = true,
-            Message = "Prefill started",
-            CompletedAt = DateTime.UtcNow
+            Success = admission.Accepted,
+            Error = admission.Error,
+            Data = admission.Accepted ? new PrefillStart(true, request.Id, _protocol.DaemonInstanceId,
+                admission.Replayed ? admission.Operation!.State : "started") : null
         };
     }
 
@@ -1393,17 +1335,6 @@ public sealed class SocketCommandInterface : IDisposable
             BroadcastProgress(new PrefillProgressUpdate
             {
                 State = "error",
-                ErrorMessage = message,
-                UpdatedAt = DateTime.UtcNow
-            });
-        }
-
-        public void OnCancelled(string message)
-        {
-            OnLog(LogLevel.Info, message);
-            BroadcastProgress(new PrefillProgressUpdate
-            {
-                State = "cancelled",
                 ErrorMessage = message,
                 UpdatedAt = DateTime.UtcNow
             });

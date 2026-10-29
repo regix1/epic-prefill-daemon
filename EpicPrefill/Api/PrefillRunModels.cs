@@ -274,6 +274,7 @@ public class CommandResponse
     public bool Success { get; set; }
     public string? Message { get; set; }
     public string? Error { get; set; }
+    public string? ErrorCode { get; set; }
     public object? Data { get; set; }
     public bool RequiresLogin { get; set; }
     public DateTime CompletedAt { get; set; } = DateTime.UtcNow;

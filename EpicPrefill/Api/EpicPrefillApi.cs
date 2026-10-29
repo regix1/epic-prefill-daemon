@@ -627,9 +627,6 @@ public sealed class EpicPrefillApi : IDisposable
     /// <summary>
     /// Runs the prefill operation
     /// </summary>
-    public Task<PrefillResult> PrefillAsync(PrefillOptions? options = null, CancellationToken cancellationToken = default)
-        => PrefillAsync(options, null, cancellationToken);
-
     internal async Task<PrefillResult> PrefillAsync(
         PrefillOptions? options = null,
         PrefillRun? run = null,
