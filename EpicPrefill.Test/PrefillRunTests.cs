@@ -124,9 +124,16 @@ public sealed class PrefillRunTests
             Assert.True((await Send(commands, first)).Success);
             Assert.True((await Send(commands, second)).Success);
             Assert.True((await Send(commands, first)).Success);
-            Assert.Equal("operation-conflict", (await Send(commands, Start("one", status.DaemonInstanceId!, "other"))).Error);
+            var conflict = await Send(commands, Start("one", status.DaemonInstanceId!, "other"));
+            Assert.Equal("operation-conflict", conflict.Error);
+            Assert.Equal("operation-conflict", conflict.ErrorCode);
+            Assert.True((await Send(commands, Start("three", status.DaemonInstanceId!, "c"))).Success);
+            Assert.True((await Send(commands, Start("four", status.DaemonInstanceId!, "d"))).Success);
+            var full = await Send(commands, Start("five", status.DaemonInstanceId!, "e"));
+            Assert.False(full.Success);
+            Assert.Equal("run-limit", full.ErrorCode);
             Assert.False((await Send(commands, "prefill")).Success);
-            Assert.Contains("ambiguous", (await Send(commands, "cancel-prefill")).Error!, StringComparison.OrdinalIgnoreCase);
+            Assert.False((await Send(commands, "cancel-prefill")).Success);
             var page = await Send(commands, new CommandRequest
             {
                 Id = "page",
@@ -176,7 +183,7 @@ public sealed class PrefillRunTests
         loseAccount.TrySetResult();
         var owner = (OwnedOperationCoordinator)typeof(SocketCommandInterface)
             .GetField("_prefillOperation", BindingFlags.NonPublic | BindingFlags.Instance)!.GetValue(commands)!;
-        await Task.WhenAll(new[] { "a", "b", "c" }.Select(id => owner.WaitAsync(id))).WaitAsync(TimeSpan.FromSeconds(5));
+        await ConcurrentPrefillTests.WaitUntilAsync(() => owner.GetActiveOperations().Count == 0);
         Assert.All(owner.GetRecentOperations(), run =>
         {
             Assert.Equal("failed", run.State);

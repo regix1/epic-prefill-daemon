@@ -43,7 +43,7 @@ public sealed class PrefillRun : IPrefillProgress
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            Progress.TryChooseTerminal("cancelled");
+            Progress.TryChooseTerminal("canceled");
             throw;
         }
         catch (Exception)
@@ -84,7 +84,7 @@ public sealed class PrefillRun : IPrefillProgress
             OperationId = snapshot.OperationId,
             DaemonInstanceId = snapshot.DaemonInstanceId,
             Sequence = snapshot.Sequence,
-            State = snapshot.State is "completed" or "failed" or "cancelled" or "cancelling"
+            State = snapshot.State is "completed" or "failed" or "canceled" or "canceling"
                 ? snapshot.State : item?.Result == null ? snapshot.State : "app_completed",
             CurrentAppId = item?.AppId,
             CurrentAppName = item?.Name,
@@ -99,7 +99,7 @@ public sealed class PrefillRun : IPrefillProgress
             AlreadyUpToDate = snapshot.CachedApps,
             FailedApps = snapshot.FailedApps,
             SkippedApps = snapshot.SkippedApps,
-            CancelledApps = snapshot.CancelledApps,
+            CanceledApps = snapshot.CanceledApps,
             UpdatedAt = snapshot.UpdatedAt.UtcDateTime,
             TotalTime = snapshot.UpdatedAt - snapshot.StartedAt
         };

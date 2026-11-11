@@ -88,16 +88,16 @@ public sealed class ConcurrentPrefillTests
                 _ => throw new InvalidOperationException("Rejected work must not execute."));
             Assert.False(rejected.Accepted);
             Assert.Equal("run-limit", rejected.Error);
-            Assert.Equal("cancelling", owner.Cancel("run-0", protocol.DaemonInstanceId)!.State);
-            await owner.WaitAsync("run-0").WaitAsync(TimeSpan.FromSeconds(5));
-            Assert.Equal("cancelled", owner.GetOperation("run-0")!.State);
+            Assert.Equal("canceling", owner.Cancel("run-0", protocol.DaemonInstanceId)!.State);
+            await WaitUntilAsync(() => owner.GetActiveOperations().All(run => run.OperationId != "run-0"));
+            Assert.Equal("canceled", owner.GetOperation("run-0")!.State);
             Assert.Equal(3, owner.GetOperation("run-0")!.BytesTransferred);
             Assert.Equal(2, owner.GetActiveOperations().Count);
             Assert.False(handlers[1].Body.Disposed);
             Assert.False(handlers[2].Body.Disposed);
             handlers[1].Body.Release.TrySetResult();
             handlers[2].Body.Release.TrySetResult();
-            await Task.WhenAll(owner.WaitAsync("run-1"), owner.WaitAsync("run-2")).WaitAsync(TimeSpan.FromSeconds(5));
+            await WaitUntilAsync(() => owner.GetActiveOperations().Count == 0);
             Assert.Equal(8, owner.GetOperation("run-1")!.BytesTransferred);
             Assert.Equal(8, owner.GetOperation("run-2")!.BytesTransferred);
             Assert.Equal("completed", owner.GetOperation("run-2")!.State);
@@ -116,6 +116,15 @@ public sealed class ConcurrentPrefillTests
         Interactive = InteractionSupport.No,
         Out = new AnsiConsoleOutput(TextWriter.Synchronized(TextWriter.Null))
     });
+
+    internal static async Task WaitUntilAsync(Func<bool> condition)
+    {
+        using var timeout = new CancellationTokenSource(TimeSpan.FromSeconds(5));
+        while (!condition())
+        {
+            await Task.Delay(10, timeout.Token);
+        }
+    }
 
     private sealed class BodyHandler : HttpMessageHandler
     {

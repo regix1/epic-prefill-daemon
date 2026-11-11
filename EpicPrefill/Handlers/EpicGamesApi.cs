@@ -271,7 +271,7 @@
 
         /// <summary>
         /// Writes the app metadata cache to disk. Deliberately ignores the run's cancellation token:
-        /// this also runs while unwinding a cancelled run, and a cancelled token would throw away the
+        /// this also runs while unwinding a canceled run, and a canceled token would throw away the
         /// very progress the write exists to keep.
         /// </summary>
         private async Task SaveMetadataCacheAsync(Dictionary<string, AppMetadataResponse> metadataDictionary)

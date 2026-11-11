@@ -268,7 +268,7 @@ namespace EpicPrefill.Handlers
 
             if (TokenStorageEncryption.IsEncrypted(rawContent))
             {
-                // Normal path: decrypt then deserialise
+                // Normal path: decrypt then deserialize
                 string json;
                 try
                 {

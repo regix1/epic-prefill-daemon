@@ -101,7 +101,7 @@
                     }
 
                     await DownloadSingleAppAsync(app, _downloadHandler, _prefillSummaryResult, _progress, force, cancellationToken);
-                    if (run?.Progress.Terminal != null || run?.Progress.Snapshot.State == "cancelling") { return; }
+                    if (run?.Progress.Terminal != null || run?.Progress.Snapshot.State == "canceling") { return; }
                 }
                 catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
                 {
@@ -204,8 +204,8 @@
             }
             catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
             {
-                // Only a genuine user cancellation (token signalled) propagates. An HttpClient timeout also
-                // throws OperationCanceledException but with the token unsignalled; that falls through to the
+                // Only a genuine user cancellation (token signaled) propagates. An HttpClient timeout also
+                // throws OperationCanceledException but with the token unsignaled; that falls through to the
                 // general handler below and degrades to a full owned-games prefill instead of aborting the run.
                 throw;
             }

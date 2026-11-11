@@ -86,7 +86,7 @@ public sealed class DaemonAdapterTests
                 {
                     var progress = root.GetProperty("data");
                     Assert.Equal("one", progress.GetProperty("operationId").GetString());
-                    receivedTerminal |= progress.GetProperty("state").GetString() == "cancelled";
+                    receivedTerminal |= progress.GetProperty("state").GetString() == "canceled";
                 }
             }
             Assert.Equal(3, calls);

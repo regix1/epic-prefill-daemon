@@ -52,10 +52,10 @@ public class ProgressEvent : SocketEvent<PrefillProgressUpdate>
 
 public class AuthStateEvent : SocketEvent<AuthStateData>
 {
-    public AuthStateEvent(string state, string? message = null, string? displayName = null)
+    public AuthStateEvent(string state, string? message = null, string? displayName = null, string? errorCode = null)
     {
         Type = "auth-state";
-        Data = new AuthStateData { State = state, Message = message, DisplayName = displayName };
+        Data = new AuthStateData { State = state, Message = message, DisplayName = displayName, ErrorCode = errorCode };
     }
 }
 
@@ -79,7 +79,7 @@ public class PrefillProgressUpdate
     public long Sequence { get; set; }
     public string? Reason { get; set; }
     public int SkippedApps { get; set; }
-    public int CancelledApps { get; set; }
+    public int CanceledApps { get; set; }
     [System.Text.Json.Serialization.JsonPropertyName("state")]
     public string State { get; set; } = "idle";
 
@@ -298,4 +298,5 @@ public class AuthStateData
     public string State { get; init; } = string.Empty;
     public string? Message { get; init; }
     public string? DisplayName { get; init; }
+    public string? ErrorCode { get; init; }
 }

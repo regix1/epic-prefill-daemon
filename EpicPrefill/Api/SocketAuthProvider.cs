@@ -147,7 +147,7 @@ public sealed class SocketAuthProvider : IEpicAuthProvider, IDisposable
     /// </summary>
     public void CancelPendingRequest()
     {
-        _progress.OnLog(LogLevel.Info, "Cancelling pending credential request...");
+        _progress.OnLog(LogLevel.Info, "Canceling pending credential request...");
 
         _pendingCredential?.TrySetCanceled();
         _pendingCredential = null;
@@ -155,7 +155,7 @@ public sealed class SocketAuthProvider : IEpicAuthProvider, IDisposable
 
         ClearPinnedCredential();
 
-        _progress.OnLog(LogLevel.Info, "Pending credential request cancelled");
+        _progress.OnLog(LogLevel.Info, "Pending credential request canceled");
     }
 
     public string? CurrentChallengeId => _currentChallengeId;

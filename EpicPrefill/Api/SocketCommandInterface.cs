@@ -280,7 +280,7 @@ public sealed class SocketCommandInterface : IDisposable
             }
             catch (OperationCanceledException) when (loginCts.Token.IsCancellationRequested)
             {
-                _progress.OnLog(LogLevel.Info, "Login cancelled");
+                _progress.OnLog(LogLevel.Info, "Login canceled");
                 if (loginGeneration != Interlocked.Read(ref _loginGeneration))
                 {
                     DisposeOrphanedApi(api);
@@ -288,7 +288,7 @@ public sealed class SocketCommandInterface : IDisposable
                 }
                 _isLoggingIn = false;
                 CleanupApiInstance();
-                await BroadcastStatusAsync("awaiting-login", "Login cancelled - ready for new attempt");
+                await BroadcastStatusAsync("awaiting-login", "Login canceled - ready for new attempt");
             }
             catch (Exception ex)
             {
@@ -300,7 +300,7 @@ public sealed class SocketCommandInterface : IDisposable
                 }
                 _isLoggingIn = false;
                 CleanupApiInstance();
-                await BroadcastStatusAsync("awaiting-login", $"Login failed: {ex.Message}");
+                await BroadcastStatusAsync("awaiting-login", $"Login failed: {ex.Message}", errorCode: "login-failed");
             }
             finally
             {
@@ -467,7 +467,7 @@ public sealed class SocketCommandInterface : IDisposable
             }
             catch (OperationCanceledException) when (loginCts.Token.IsCancellationRequested)
             {
-                _progress.OnLog(LogLevel.Info, "Headless login cancelled");
+                _progress.OnLog(LogLevel.Info, "Headless login canceled");
                 if (loginGeneration != Interlocked.Read(ref _loginGeneration))
                 {
                     DisposeOrphanedApi(api);
@@ -475,7 +475,7 @@ public sealed class SocketCommandInterface : IDisposable
                 }
                 _isLoggingIn = false;
                 CleanupApiInstance();
-                await BroadcastStatusAsync("awaiting-login", "Login cancelled - ready for new attempt");
+                await BroadcastStatusAsync("awaiting-login", "Login canceled - ready for new attempt");
             }
             catch (Exception ex)
             {
@@ -487,7 +487,7 @@ public sealed class SocketCommandInterface : IDisposable
                 }
                 _isLoggingIn = false;
                 CleanupApiInstance();
-                await BroadcastStatusAsync("awaiting-login", $"Login failed: {ex.Message}");
+                await BroadcastStatusAsync("awaiting-login", $"Login failed: {ex.Message}", errorCode: "login-failed");
             }
             finally
             {
@@ -526,7 +526,7 @@ public sealed class SocketCommandInterface : IDisposable
             {
                 if (_loginCts != null) await _loginCts.CancelAsync();
             }
-            catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error cancelling login CTS: {ex.Message}"); }
+            catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error canceling login CTS: {ex.Message}"); }
 
             // Bounded wait for the login task to unwind. A stuck login must never hang logout -
             // if it doesn't finish in time we force-cleanup below anyway; the generation bump
@@ -566,7 +566,7 @@ public sealed class SocketCommandInterface : IDisposable
         {
             return new CommandResponse { Id = request.Id, Success = true, Message = "No login in progress" };
         }
-        _progress.OnLog(LogLevel.Info, "Cancelling login...");
+        _progress.OnLog(LogLevel.Info, "Canceling login...");
 
         // Bump the generation first, same as logout: a login task that races past this
         // cancellation (Epic's OAuth exchange doesn't check the token mid-flight) must not be able
@@ -579,7 +579,7 @@ public sealed class SocketCommandInterface : IDisposable
         {
             if (_loginCts != null) await _loginCts.CancelAsync();
         }
-        catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error cancelling login CTS: {ex.Message}"); }
+        catch (Exception ex) { _progress.OnLog(LogLevel.Debug, $"Error canceling login CTS: {ex.Message}"); }
 
         if (loginTask != null)
         {
@@ -604,55 +604,33 @@ public sealed class SocketCommandInterface : IDisposable
         }
 
         CleanupApiInstance();
-        await BroadcastStatusAsync("awaiting-login", "Login cancelled - ready for new attempt");
+        await BroadcastStatusAsync("awaiting-login", "Login canceled - ready for new attempt");
 
         return new CommandResponse
         {
             Id = request.Id,
             Success = true,
-            Message = "Login cancelled",
+            Message = "Login canceled",
             CompletedAt = DateTime.UtcNow
         };
     }
 
-    private async Task<CommandResponse> HandleCancelPrefillAsync(
+    private Task<CommandResponse> HandleCancelPrefillAsync(
         CommandRequest request,
         CancellationToken cancellationToken)
     {
-        if (request.Parameters?.TryGetValue("operationId", out var operationId) == true)
-        {
-            _protocol.ValidateInstance(request.Parameters.GetValueOrDefault("daemonInstanceId") ?? "");
-            var snapshot = _prefillOperation.Cancel(operationId, _protocol.DaemonInstanceId);
-            return new CommandResponse
-            {
-                Id = request.Id,
-                Success = snapshot != null,
-                Data = snapshot,
-                Error = snapshot == null ? "operation-not-found" : null,
-                ErrorCode = snapshot == null ? "operation-not-found" : null
-            };
-        }
-        if (!_prefillOperation.IsRunning)
-        {
-            return new CommandResponse
-            {
-                Id = request.Id,
-                Success = true,
-                Message = "No prefill in progress",
-                CompletedAt = DateTime.UtcNow
-            };
-        }
-
-        _progress.OnLog(LogLevel.Info, "Cancelling prefill...");
-        await _prefillOperation.CancelAndWaitAsync(cancellationToken);
-
-        return new CommandResponse
+        var operationId = request.Parameters?.GetValueOrDefault("operationId")
+            ?? throw new ArgumentException("operationId is required.");
+        _protocol.ValidateInstance(request.Parameters.GetValueOrDefault("daemonInstanceId") ?? "");
+        var snapshot = _prefillOperation.Cancel(operationId, _protocol.DaemonInstanceId);
+        return Task.FromResult(new CommandResponse
         {
             Id = request.Id,
-            Success = true,
-            Message = "Prefill cancelled",
-            CompletedAt = DateTime.UtcNow
-        };
+            Success = snapshot != null,
+            Data = snapshot,
+            Error = snapshot == null ? "operation-not-found" : null,
+            ErrorCode = snapshot == null ? "operation-not-found" : null
+        });
     }
 
     private CommandResponse HandleProvideCredential(CommandRequest request)
@@ -982,6 +960,7 @@ public sealed class SocketCommandInterface : IDisposable
             Id = request.Id,
             Success = admission.Accepted,
             Error = admission.Error,
+            ErrorCode = admission.Error,
             Data = admission.Accepted ? new PrefillStart(true, request.Id, _protocol.DaemonInstanceId,
                 admission.Replayed ? admission.Operation!.State : "started") : null
         };
@@ -1176,9 +1155,9 @@ public sealed class SocketCommandInterface : IDisposable
         }
     }
 
-    private async Task BroadcastStatusAsync(string status, string message, string? displayName = null)
+    private async Task BroadcastStatusAsync(string status, string message, string? displayName = null, string? errorCode = null)
     {
-        var statusEvent = new AuthStateEvent(status, message, displayName);
+        var statusEvent = new AuthStateEvent(status, message, displayName, errorCode);
         await _socketServer.BroadcastAuthStateAsync(statusEvent);
     }
 

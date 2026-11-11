@@ -29,7 +29,7 @@ public sealed class CacheCommitTests
             await run.ExecuteAsync(_ =>
             {
                 run.OnDownloadProgress(new DownloadProgressInfo { AppId = "target", BytesDownloaded = 12, TotalBytes = 12 });
-                Assert.True(run.Progress.TryChooseTerminal("cancelled"));
+                Assert.True(run.Progress.TryChooseTerminal("canceled"));
                 Assert.False(handler.MarkDownloadAsSuccessful(app, run, 12));
                 return Task.CompletedTask;
             }, CancellationToken.None);
@@ -38,10 +38,10 @@ public sealed class CacheCommitTests
             Assert.Equal(before, File.ReadAllText(path));
             Assert.Null(handler.AppIsUpToDate(app));
             Assert.Single(directory.GetFiles());
-            Assert.Equal("cancelled", run.Progress.Snapshot.State);
+            Assert.Equal("canceled", run.Progress.Snapshot.State);
             Assert.Equal(0, run.Progress.Snapshot.CompletedApps);
             Assert.Equal(12, run.Progress.Snapshot.BytesTransferred);
-            Assert.Equal("cancelled", Assert.Single(run.Progress.GetPage().Items).Result);
+            Assert.Equal("canceled", Assert.Single(run.Progress.GetPage().Items).Result);
         }
         finally { directory.Delete(true); }
     }
@@ -71,13 +71,13 @@ public sealed class CacheCommitTests
             var sequence = run.Progress.Snapshot.Sequence;
             commit = Task.Run(() => Assert.True(handler.MarkDownloadAsSuccessful(app, run, 12)));
             await entered.Task.WaitAsync(TimeSpan.FromSeconds(5));
-            var cancelling = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
+            var canceling = new TaskCompletionSource(TaskCreationOptions.RunContinuationsAsynchronously);
             cancel = Task.Run(() =>
             {
-                cancelling.TrySetResult();
-                Assert.True(run.Progress.TryChooseTerminal("cancelled"));
+                canceling.TrySetResult();
+                Assert.True(run.Progress.TryChooseTerminal("canceled"));
             });
-            await cancelling.Task.WaitAsync(TimeSpan.FromSeconds(5));
+            await canceling.Task.WaitAsync(TimeSpan.FromSeconds(5));
             release.Set();
             await Task.WhenAll(commit, cancel).WaitAsync(TimeSpan.FromSeconds(5));
             Assert.Equal(sequence + 1, run.Progress.Snapshot.Sequence);
@@ -92,7 +92,7 @@ public sealed class CacheCommitTests
             Assert.True(new AppInfoHandler(ConcurrentPrefillTests.CreateConsole(), path,
                 (source, target) => File.Move(source, target, true)).AppIsUpToDate(app));
             Assert.Single(directory.GetFiles());
-            Assert.Equal("cancelled", run.Progress.Snapshot.State);
+            Assert.Equal("canceled", run.Progress.Snapshot.State);
             Assert.Equal(1, run.Progress.Snapshot.CompletedApps);
             Assert.Equal(12, run.Progress.Snapshot.BytesTransferred);
             Assert.Equal("success", Assert.Single(run.Progress.GetPage().Items).Result);

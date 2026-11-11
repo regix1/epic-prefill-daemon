@@ -659,7 +659,7 @@ public sealed class EpicPrefillApi : IDisposable
         }
         catch (OperationCanceledException) when (cancellationToken.IsCancellationRequested)
         {
-            _progress.OnLog(LogLevel.Info, "Prefill operation cancelled");
+            _progress.OnLog(LogLevel.Info, "Prefill operation canceled");
             throw;
         }
         catch (EpicLoginException)
